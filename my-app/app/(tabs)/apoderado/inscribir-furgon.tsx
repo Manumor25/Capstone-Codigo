@@ -48,6 +48,9 @@ export default function PostularFurgon() {
   const [cargandoFoto, setCargandoFoto] = useState(false);
   const [bloqueoVisible, setBloqueoVisible] = useState(false);
   const [bloqueoMensaje, setBloqueoMensaje] = useState('');
+  const [nombreConductor, setNombreConductor] = useState<string>('');
+  const [telefonoConductor, setTelefonoConductor] = useState<string>('');
+  const [cargandoConductor, setCargandoConductor] = useState(false);
   const rutConductorParam = (params.rutConductor as string) || '';
   const patenteParam = (params.patente as string) || '';
   const furgonIdParam = (params.id as string) || '';
@@ -104,6 +107,65 @@ export default function PostularFurgon() {
 
     cargarDatos();
   }, []);
+
+  useEffect(() => {
+    const cargarNombreConductor = async () => {
+      if (!rutConductorParam) {
+        // Si no hay rutConductor en params, intentar obtenerlo del furgón
+        try {
+          if (furgonIdParam) {
+            const furgonRef = doc(db, 'Furgones', furgonIdParam);
+            const snapshot = await getDoc(furgonRef);
+            if (snapshot.exists()) {
+              const data = snapshot.data();
+              const rutConductor = data?.rutUsuario || '';
+              if (rutConductor) {
+                await obtenerNombreConductor(rutConductor);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error al obtener RUT del conductor:', error);
+        }
+        return;
+      }
+
+      await obtenerNombreConductor(rutConductorParam);
+    };
+
+    cargarNombreConductor();
+  }, [rutConductorParam, furgonIdParam]);
+
+  const obtenerNombreConductor = async (rutConductor: string): Promise<void> => {
+    if (!rutConductor) {
+      return;
+    }
+
+    setCargandoConductor(true);
+    try {
+      const usuariosRef = collection(db, 'usuarios');
+      const q = query(usuariosRef, where('rut', '==', rutConductor));
+      const snapshot = await getDocs(q);
+
+      if (!snapshot.empty) {
+        const data = snapshot.docs[0].data() as any;
+        const nombres = data?.nombres?.toString() || '';
+        const apellidos = data?.apellidos?.toString() || '';
+        const nombreCompleto = `${nombres} ${apellidos}`.trim();
+        const telefono = data?.telefono?.toString() || '';
+        setNombreConductor(nombreCompleto || 'Conductor no identificado');
+        setTelefonoConductor(telefono || 'No disponible');
+      } else {
+        setNombreConductor('Conductor no identificado');
+        setTelefonoConductor('No disponible');
+      }
+    } catch (error) {
+      console.error('No se pudo obtener el nombre del conductor:', error);
+      setNombreConductor('Conductor no identificado');
+    } finally {
+      setCargandoConductor(false);
+    }
+  };
 
   useEffect(() => {
     const cargarFotoFurgon = async () => {
@@ -245,6 +307,8 @@ export default function PostularFurgon() {
 
       const obtenerCoincidenciasListaPasajeros = async () => {
         let coincidencias: any[] = [];
+        
+        // Primero intentar consulta combinada (más eficiente)
         try {
           const combinadaSnap = await getDocs(
             query(
@@ -253,53 +317,91 @@ export default function PostularFurgon() {
               where('rutHijo', '==', rutHijoSeleccionado),
             ),
           );
-          coincidencias = recolectarCoincidencias(combinadaSnap.docs);
+          
+          console.log('Consulta combinada encontrada:', combinadaSnap.docs.length, 'registros');
+          
+          // Filtrar solo registros activos (estado 'aceptada' o sin estado de baja)
+          const registrosActivos = combinadaSnap.docs.filter((docSnap) => {
+            const data = docSnap.data() || {};
+            const estado = (data.estado || 'aceptada').toString().toLowerCase();
+            // Solo considerar activos si el estado es 'aceptada' o no tiene estado de baja
+            return estado === 'aceptada' || estado === 'activa' || !data.fechaBaja;
+          });
+          
+          console.log('Registros activos encontrados:', registrosActivos.length);
+          
+          coincidencias = recolectarCoincidencias(registrosActivos);
           if (coincidencias.length > 0) {
+            console.log('Coincidencias activas encontradas:', coincidencias.length);
             return coincidencias;
           }
         } catch (consultaError) {
           console.warn('Consulta combinada lista_pasajeros falló, se intentará con filtros simples:', consultaError);
         }
 
+        // Si no hay coincidencias con la consulta combinada, intentar por rutApoderado
         try {
           const porApoderadoSnap = await getDocs(query(listaPasajerosRef, where('rutApoderado', '==', rutUsuario)));
-          coincidencias = recolectarCoincidencias(porApoderadoSnap.docs);
+          
+          // Filtrar solo registros activos para este hijo
+          const registrosActivos = porApoderadoSnap.docs.filter((docSnap) => {
+            const data = docSnap.data() || {};
+            const rutDoc = normalizarRut((data.rutHijo || '').toString());
+            if (rutDoc !== objetivoRut) return false;
+            
+            const estado = (data.estado || 'aceptada').toString().toLowerCase();
+            return estado === 'aceptada' || estado === 'activa' || !data.fechaBaja;
+          });
+          
+          coincidencias = recolectarCoincidencias(registrosActivos);
           if (coincidencias.length > 0) {
+            console.log('Coincidencias activas encontradas por rutApoderado:', coincidencias.length);
             return coincidencias;
           }
         } catch (errorApoderado) {
           console.warn('Consulta por rutApoderado falló, se intentará con rutHijo:', errorApoderado);
         }
 
+        // Último intento: por rutHijo
         try {
           const porRutSnap = await getDocs(query(listaPasajerosRef, where('rutHijo', '==', rutHijoSeleccionado)));
-          coincidencias = recolectarCoincidencias(porRutSnap.docs);
+          
+          // Filtrar solo registros activos para este apoderado
+          const registrosActivos = porRutSnap.docs.filter((docSnap) => {
+            const data = docSnap.data() || {};
+            const rutDocApoderado = normalizarRut((data.rutApoderado || '').toString());
+            const rutDocUsuario = normalizarRut(rutUsuario);
+            if (rutDocApoderado !== rutDocUsuario) return false;
+            
+            const estado = (data.estado || 'aceptada').toString().toLowerCase();
+            return estado === 'aceptada' || estado === 'activa' || !data.fechaBaja;
+          });
+          
+          coincidencias = recolectarCoincidencias(registrosActivos);
           if (coincidencias.length > 0) {
+            console.log('Coincidencias activas encontradas por rutHijo:', coincidencias.length);
             return coincidencias;
           }
         } catch (errorRut) {
-          console.warn('Consulta por rutHijo falló, se intentará lectura total de lista_pasajeros:', errorRut);
+          console.warn('Consulta por rutHijo falló:', errorRut);
         }
 
-        try {
-          const todosSnap = await getDocs(listaPasajerosRef);
-          coincidencias = recolectarCoincidencias(todosSnap.docs);
-        } catch (errorTotal) {
-          console.warn('No se pudo obtener la lista completa de pasajeros:', errorTotal);
-        }
-
-        return coincidencias;
+        console.log('No se encontraron inscripciones activas para este hijo');
+        return [];
       };
 
       const coincidenciasLista = await obtenerCoincidenciasListaPasajeros();
       if (coincidenciasLista.length > 0) {
         const detallePatentes = Array.from(patentesRegistradas).join(', ');
         const mensajeExtra = detallePatentes.length > 0 ? ` Actualmente figura en: ${detallePatentes}.` : '';
+        console.log('Bloqueando postulación: Hijo ya inscrito activamente');
         mostrarBloqueo(
           `Este hijo ya esta inscrito en un furgon.${mensajeExtra} Comunicate con el tio del furgon para salirse antes de intentar una nueva postulacion.`,
         );
         return;
       }
+      
+      console.log('No hay inscripciones activas, permitiendo postulación');
 
       const postulacionesRef = collection(db, 'Postulaciones');
       let postulacionesAceptadasSnap;
@@ -345,7 +447,14 @@ export default function PostularFurgon() {
       });
 
       const nombreApoderado = await obtenerNombreApoderado();
-      await addDoc(collection(db, 'Alertas'), {
+      
+      console.log('Creando alerta de postulación:');
+      console.log('- RUT Conductor (destinatario):', rutConductor);
+      console.log('- Patente Furgón:', patenteFurgon);
+      console.log('- ID Postulación:', postulacionDoc.id);
+      console.log('- Nombre Apoderado:', nombreApoderado);
+      
+      const alertaData = {
         tipoAlerta: 'Postulacion',
         descripcion: (nombreApoderado || 'Un apoderado') + ' esta postulando a tu furgon',
         rutDestinatario: rutConductor,
@@ -360,7 +469,12 @@ export default function PostularFurgon() {
         creadoEn: serverTimestamp(),
         leida: false,
         patenteFurgon,
-      });
+      };
+      
+      console.log('Datos de la alerta:', JSON.stringify(alertaData, null, 2));
+      
+      const alertaDoc = await addDoc(collection(db, 'Alertas'), alertaData);
+      console.log('✓ Alerta de postulación creada exitosamente con ID:', alertaDoc.id);
 
       router.push({
         pathname: '/chat-validacion',
@@ -481,12 +595,22 @@ export default function PostularFurgon() {
             <Ionicons name="image-outline" size={56} color="#127067" />
           )}
         </View>
-        <Text style={styles.name}>{(params.nombre as string) || 'Furgón disponible'}</Text>
-        <Text style={styles.school}>{(params.colegio as string) || 'Colegio no informado'}</Text>
+        {cargandoConductor ? (
+          <Text style={styles.name}>Cargando información...</Text>
+        ) : (
+          <Text style={styles.name}>{nombreConductor || 'Conductor no identificado'}</Text>
+        )}
+        <Text style={styles.school}>{(params.nombre as string) || 'Furgón disponible'}</Text>
+        <Text style={styles.schoolSubtitle}>{(params.colegio as string) || 'Colegio no informado'}</Text>
         <View style={styles.detailsCard}>
           <Text style={styles.detailItem}>Comuna: {(params.comuna as string) || 'No registrada'}</Text>
           <Text style={styles.detailItem}>Patente: {patenteParam || 'Sin patente'}</Text>
           <Text style={styles.detailItem}>Precio: ${(params.precio as string) || 'N/D'} CLP</Text>
+          {cargandoConductor ? (
+            <Text style={styles.detailItem}>Teléfono: Cargando...</Text>
+          ) : (
+            <Text style={styles.detailItem}>Teléfono: {telefonoConductor || 'No disponible'}</Text>
+          )}
         </View>
         <Text style={styles.verified}>Verificado: Si</Text>
       </View>
@@ -562,6 +686,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#555',
     marginTop: 4,
+  },
+  schoolSubtitle: {
+    fontSize: 14,
+    color: '#777',
+    marginTop: 2,
   },
   detailsCard: {
     marginTop: 14,

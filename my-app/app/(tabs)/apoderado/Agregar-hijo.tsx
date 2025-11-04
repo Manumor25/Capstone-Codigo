@@ -9,6 +9,7 @@ import {
   Pressable,
   Alert,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -43,6 +44,289 @@ export default function AddChildScreen() {
     edad: '',
   });
 
+  // Función para formatear RUT (00.000.000-K)
+  const formatearRUT = (text: string): string => {
+    // Remover todo excepto números y la letra K
+    let rutLimpio = text.replace(/[^0-9kK]/g, '');
+    
+    // Si no hay nada, retornar vacío
+    if (rutLimpio.length === 0) {
+      return '';
+    }
+    
+    // Convertir k minúscula a K mayúscula
+    rutLimpio = rutLimpio.replace(/k/g, 'K');
+    
+    // Si el último carácter es K o un número, ese es el dígito verificador
+    const ultimoChar = rutLimpio.slice(-1);
+    const esDigitoVerificador = /[0-9K]/.test(ultimoChar);
+    
+    let rutSinDV = '';
+    let digitoVerificador = '';
+    
+    if (esDigitoVerificador && rutLimpio.length > 1) {
+      // Separar dígitos del dígito verificador
+      rutSinDV = rutLimpio.slice(0, -1);
+      digitoVerificador = ultimoChar;
+    } else {
+      // Si solo hay números, todos son parte del RUT
+      rutSinDV = rutLimpio;
+      digitoVerificador = '';
+    }
+    
+    // Si no hay dígitos del RUT, solo retornar el dígito verificador si existe
+    if (rutSinDV.length === 0) {
+      return digitoVerificador;
+    }
+    
+    // Formatear los números con puntos
+    let rutFormateado = '';
+    let contador = 0;
+    
+    // Agregar puntos desde la derecha
+    for (let i = rutSinDV.length - 1; i >= 0; i--) {
+      if (contador === 3) {
+        rutFormateado = '.' + rutFormateado;
+        contador = 0;
+      }
+      rutFormateado = rutSinDV[i] + rutFormateado;
+      contador++;
+    }
+    
+    // Agregar el dígito verificador si existe
+    if (digitoVerificador) {
+      return rutFormateado + '-' + digitoVerificador;
+    }
+    
+    return rutFormateado;
+  };
+
+  // Función para manejar el cambio de RUT
+  const manejarCambioRUT = (text: string) => {
+    // Solo permitir números y K/k (el guión debe estar al final para evitar problemas con el rango)
+    const rutValido = text.replace(/[^0-9kK.\-]/g, '');
+    const rutFormateado = formatearRUT(rutValido);
+    setRut(rutFormateado);
+    
+    // Validar formato de RUT
+    const rutPattern = /^\d{1,2}\.\d{3}\.\d{3}-[0-9kK]$/;
+    if (rutFormateado && rutFormateado.length > 0) {
+      if (!rutPattern.test(rutFormateado) && rutFormateado.length > 3) {
+        setErrores(prev => ({
+          ...prev,
+          rut: 'Formato de RUT inválido. Debe ser: 00.000.000-K'
+        }));
+      } else {
+        setErrores(prev => ({
+          ...prev,
+          rut: ''
+        }));
+      }
+    }
+  };
+
+  // Función para formatear fecha (dd/mm/yyyy)
+  const formatearFecha = (text: string): string => {
+    // Remover todo excepto números
+    const numeros = text.replace(/[^0-9]/g, '');
+    
+    // Si no hay nada, retornar vacío
+    if (numeros.length === 0) {
+      return '';
+    }
+    
+    // Limitar a 8 dígitos (ddmmyyyy)
+    const numerosLimitados = numeros.slice(0, 8);
+    
+    // Formatear según la longitud
+    if (numerosLimitados.length <= 2) {
+      return numerosLimitados;
+    } else if (numerosLimitados.length <= 4) {
+      return numerosLimitados.slice(0, 2) + '/' + numerosLimitados.slice(2);
+    } else {
+      return numerosLimitados.slice(0, 2) + '/' + numerosLimitados.slice(2, 4) + '/' + numerosLimitados.slice(4);
+    }
+  };
+
+  // Función para manejar el cambio de fecha
+  const manejarCambioFecha = (text: string) => {
+    // Si el usuario está borrando, permitir borrar
+    if (text.length < fechaNacimiento.length) {
+      setFechaNacimiento(text);
+      setErrores(prev => ({
+        ...prev,
+        fechaNacimiento: ''
+      }));
+      return;
+    }
+    
+    // Si el texto ya tiene formato con barras, mantenerlo pero validar
+    if (text.includes('/')) {
+      // Verificar que el formato sea correcto
+      const fechaPattern = /^(\d{1,2})\/(\d{1,2})\/(\d{1,4})?$/;
+      const match = text.match(fechaPattern);
+      
+      if (match) {
+        // Permitir el formato con barras mientras se escribe
+        setFechaNacimiento(text);
+        
+        // Validar solo si está completo
+        if (text.length === 10) {
+          const dia = parseInt(match[1], 10);
+          const mes = parseInt(match[2], 10);
+          const año = parseInt(match[3], 10);
+          
+          // Validar rangos
+          if (dia < 1 || dia > 31 || mes < 1 || mes > 12 || año < 1900 || año > new Date().getFullYear()) {
+            setErrores(prev => ({
+              ...prev,
+              fechaNacimiento: 'Fecha inválida'
+            }));
+          } else {
+            setErrores(prev => ({
+              ...prev,
+              fechaNacimiento: ''
+            }));
+          }
+        } else {
+          setErrores(prev => ({
+            ...prev,
+            fechaNacimiento: ''
+          }));
+        }
+        return;
+      }
+    }
+    
+    // Si no tiene barras, formatear automáticamente
+    const fechaFormateada = formatearFecha(text);
+    setFechaNacimiento(fechaFormateada);
+    
+    // Validar formato de fecha solo si está completo
+    const fechaPattern = /^(\d{2})\/(\d{2})\/(\d{4})$/;
+    if (fechaFormateada && fechaFormateada.length === 10) {
+      const match = fechaFormateada.match(fechaPattern);
+      if (match) {
+        const dia = parseInt(match[1], 10);
+        const mes = parseInt(match[2], 10);
+        const año = parseInt(match[3], 10);
+        
+        // Validar rangos
+        if (dia < 1 || dia > 31 || mes < 1 || mes > 12 || año < 1900 || año > new Date().getFullYear()) {
+          setErrores(prev => ({
+            ...prev,
+            fechaNacimiento: 'Fecha inválida'
+          }));
+        } else {
+          setErrores(prev => ({
+            ...prev,
+            fechaNacimiento: ''
+          }));
+        }
+      } else {
+        setErrores(prev => ({
+          ...prev,
+          fechaNacimiento: 'Formato inválido. Use: dd/mm/yyyy'
+        }));
+      }
+    } else if (fechaFormateada.length > 0 && fechaFormateada.length < 10) {
+      setErrores(prev => ({
+        ...prev,
+        fechaNacimiento: ''
+      }));
+    }
+  };
+
+  // Función para abrir el calendario
+  const abrirCalendario = () => {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      // Crear un input de tipo date para abrir el calendario
+      const input = document.createElement('input');
+      input.type = 'date';
+      input.max = new Date().toISOString().split('T')[0];
+      
+      // Estilos para centrar el calendario en la pantalla
+      input.style.position = 'fixed';
+      input.style.top = '50%';
+      input.style.left = '50%';
+      input.style.transform = 'translate(-50%, -50%)';
+      input.style.zIndex = '99999';
+      input.style.opacity = '0';
+      input.style.width = '1px';
+      input.style.height = '1px';
+      input.style.pointerEvents = 'none';
+      
+      // Si hay una fecha actual, establecerla
+      if (fechaNacimiento && fechaNacimiento.length === 10) {
+        const partes = fechaNacimiento.split('/');
+        if (partes.length === 3) {
+          const dia = partes[0].padStart(2, '0');
+          const mes = partes[1].padStart(2, '0');
+          const año = partes[2];
+          input.value = `${año}-${mes}-${dia}`;
+        }
+      }
+      
+      input.onchange = (e: any) => {
+        if (e.target.value) {
+          const fecha = new Date(e.target.value + 'T00:00:00');
+          const dia = String(fecha.getDate()).padStart(2, '0');
+          const mes = String(fecha.getMonth() + 1).padStart(2, '0');
+          const año = fecha.getFullYear();
+          const fechaFormateada = `${dia}/${mes}/${año}`;
+          setFechaNacimiento(fechaFormateada);
+          setErrores(prev => ({
+            ...prev,
+            fechaNacimiento: ''
+          }));
+        }
+        // Remover el input del DOM después de usarlo
+        setTimeout(() => {
+          if (input.parentNode) {
+            input.parentNode.removeChild(input);
+          }
+        }, 100);
+      };
+      
+      input.onblur = () => {
+        // Remover el input del DOM si se cierra sin seleccionar
+        setTimeout(() => {
+          if (input.parentNode) {
+            input.parentNode.removeChild(input);
+          }
+        }, 200);
+      };
+      
+      // Agregar al DOM
+      document.body.appendChild(input);
+      
+      // Usar requestAnimationFrame para asegurar que el input esté en el DOM antes de abrir
+      requestAnimationFrame(() => {
+        // Intentar usar showPicker si está disponible (navegadores modernos)
+        // Esto abrirá el calendario centrado en la pantalla
+        if (typeof (input as any).showPicker === 'function') {
+          try {
+            (input as any).showPicker();
+          } catch (error) {
+            // Si showPicker falla, usar click
+            input.style.opacity = '1';
+            input.style.width = 'auto';
+            input.style.height = 'auto';
+            input.style.pointerEvents = 'auto';
+            input.click();
+          }
+        } else {
+          // Si showPicker no está disponible, usar click
+          input.style.opacity = '1';
+          input.style.width = 'auto';
+          input.style.height = 'auto';
+          input.style.pointerEvents = 'auto';
+          input.click();
+        }
+      });
+    }
+  };
+
   useEffect(() => {
     const inicializar = async () => {
       try {
@@ -63,11 +347,19 @@ export default function AddChildScreen() {
   }, []);
 
   const manejarGuardarHijo = async () => {
+    // Validar formato de RUT
+    const rutPattern = /^\d{1,2}\.\d{3}\.\d{3}-[0-9kK]$/;
+    const rutValido = rutPattern.test(rut);
+    
+    // Validar formato de fecha
+    const fechaPattern = /^(\d{2})\/(\d{2})\/(\d{4})$/;
+    const fechaValida = fechaPattern.test(fechaNacimiento);
+    
     const nuevosErrores = {
       nombres: !nombres ? 'Ingresa el nombre del hijo' : '',
       apellidos: !apellidos ? 'Ingresa el apellido' : '',
-      rut: !rut ? 'Ingresa el RUT del hijo' : '',
-      fechaNacimiento: !fechaNacimiento ? 'Ingresa la fecha de nacimiento' : '',
+      rut: !rut ? 'Ingresa el RUT del hijo' : !rutValido ? 'Formato de RUT inválido. Debe ser: 00.000.000-K' : '',
+      fechaNacimiento: !fechaNacimiento ? 'Ingresa la fecha de nacimiento' : !fechaValida ? 'Formato de fecha inválido. Use: dd/mm/yyyy' : '',
       edad: !edad ? 'Ingresa la edad' : '',
     };
 
@@ -139,19 +431,31 @@ export default function AddChildScreen() {
       {errores.apellidos ? <Text style={styles.errorText}>{errores.apellidos}</Text> : null}
 
       <TextInput
-        style={styles.input}
-        placeholder="RUT del hijo"
+        style={[styles.input, errores.rut ? styles.inputError : null]}
+        placeholder="RUT del hijo (00.000.000-K)"
         value={rut}
-        onChangeText={setRut}
+        onChangeText={manejarCambioRUT}
+        maxLength={12}
+        keyboardType="numeric"
       />
       {errores.rut ? <Text style={styles.errorText}>{errores.rut}</Text> : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Fecha de nacimiento (dd/mm/aaaa)"
-        value={fechaNacimiento}
-        onChangeText={setFechaNacimiento}
-      />
+      <View style={styles.fechaContainer}>
+        <TextInput
+          style={[styles.input, styles.fechaInput]}
+          placeholder="dd/mm/yyyy"
+          value={fechaNacimiento}
+          onChangeText={manejarCambioFecha}
+          maxLength={10}
+          keyboardType="numeric"
+        />
+        <Pressable
+          style={styles.calendarButton}
+          onPress={abrirCalendario}
+        >
+          <Ionicons name="calendar-outline" size={24} color="#127067" />
+        </Pressable>
+      </View>
       {errores.fechaNacimiento ? <Text style={styles.errorText}>{errores.fechaNacimiento}</Text> : null}
 
       <TextInput
@@ -231,5 +535,31 @@ const styles = StyleSheet.create({
     marginBottom: 5,
     alignSelf: 'flex-start',
     marginLeft: 25,
+  },
+  inputError: {
+    borderColor: 'red',
+    borderWidth: 1.5,
+  },
+  fechaContainer: {
+    width: '90%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  fechaInput: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  calendarButton: {
+    marginLeft: 10,
+    padding: 12,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#127067',
+    minWidth: 48,
+    minHeight: 48,
   },
 });

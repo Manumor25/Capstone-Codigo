@@ -6,6 +6,7 @@ import {
   TouchableHighlight,
   StyleSheet,
   Alert,
+  Pressable,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { db } from '@/firebaseConfig';
@@ -151,17 +152,25 @@ export default function GenerarAlerta() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Generar Alerta</Text>
+      {/* Header con botón de volver */}
+      <View style={styles.header}>
+        <Pressable onPress={() => router.back()} style={styles.backButton}>
+          <Ionicons name="arrow-back" size={24} color="#127067" />
+        </Pressable>
+        <Text style={styles.title}>Generar Alerta</Text>
+        <View style={styles.headerSpacer} />
+      </View>
 
-      <Text style={styles.label}>Descripción</Text>
-      <TextInput
-        style={styles.input}
-        placeholder="Escribe la descripción..."
-        value={descripcion}
-        onChangeText={setDescripcion}
-      />
+      <View style={styles.content}>
+        <Text style={styles.label}>Descripción</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Escribe la descripción..."
+          value={descripcion}
+          onChangeText={setDescripcion}
+        />
 
-      <Text style={styles.label}>Tipo de Alerta</Text>
+        <Text style={styles.label}>Tipo de Alerta</Text>
       <View style={styles.pickerContainer}>
         <Picker
           selectedValue={tipoAlerta}
@@ -204,9 +213,10 @@ export default function GenerarAlerta() {
         </Picker>
       </View>
 
-      <TouchableHighlight style={styles.button} onPress={guardarAlerta} underlayColor="#0c5c4e">
-        <Text style={styles.buttonText}>Guardar Alerta</Text>
-      </TouchableHighlight>
+        <TouchableHighlight style={styles.button} onPress={guardarAlerta} underlayColor="#0c5c4e">
+          <Text style={styles.buttonText}>Guardar Alerta</Text>
+        </TouchableHighlight>
+      </View>
     </View>
   );
 }
@@ -215,13 +225,35 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F5F7F8',
-    padding: 20,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 15,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  backButton: {
+    padding: 8,
+    borderRadius: 20,
   },
   title: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#127067',
-    marginBottom: 20,
+    flex: 1,
+    textAlign: 'center',
+  },
+  headerSpacer: {
+    width: 40,
+  },
+  content: {
+    flex: 1,
+    padding: 20,
   },
   label: {
     fontSize: 16,

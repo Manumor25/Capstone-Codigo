@@ -75,6 +75,12 @@ export default function ProfileScreen() {
         </TouchableHighlight>
       </Link>
 
+      <Link href="/conductor/borrar-furgones" asChild>
+        <TouchableHighlight style={styles.button} underlayColor="#b33d3d">
+          <Text style={styles.buttonText}>Borrar furgones</Text>
+        </TouchableHighlight>
+      </Link>
+
       <Link href="/conductor/lista_vehiculos" asChild>
         <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
           <Text style={styles.buttonText}>Editar datos vehículo</Text>

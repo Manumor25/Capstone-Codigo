@@ -26,6 +26,7 @@ export default function EditarUsuarioScreen() {
   const [nombres, setNombres] = useState('');
   const [apellidos, setApellidos] = useState('');
   const [correo, setCorreo] = useState('');
+  const [telefono, setTelefono] = useState('');
   const [rut, setRut] = useState('');
   const [esConductor, setEsConductor] = useState(false);
   const [rutUsuario, setRutUsuario] = useState('');
@@ -37,6 +38,7 @@ export default function EditarUsuarioScreen() {
     nombres: '',
     apellidos: '',
     correo: '',
+    telefono: '',
     rut: '',
   });
 
@@ -64,6 +66,7 @@ export default function EditarUsuarioScreen() {
           setNombres(userData.nombres || '');
           setApellidos(userData.apellidos || '');
           setCorreo(userData.correo || '');
+          setTelefono(userData.telefono || '');
           setRut(userData.rut || '');
           setEsConductor(userData.rol === 'Conductor');
         } else {
@@ -82,11 +85,19 @@ export default function EditarUsuarioScreen() {
 
   const validarEmail = (email: string) => email.includes('@');
 
+  const validarTelefono = (tel: string) => {
+    // Eliminar espacios, guiones y paréntesis
+    const telefonoLimpio = tel.replace(/[\s\-\(\)]/g, '');
+    // Validar que tenga entre 8 y 12 dígitos
+    return /^\d{8,12}$/.test(telefonoLimpio);
+  };
+
   const manejarActualizarUsuario = async () => {
     const nuevosErrores = {
       nombres: !nombres ? 'Debes ingresar tu nombre' : '',
       apellidos: !apellidos ? 'Debes ingresar tu apellido' : '',
       correo: !validarEmail(correo) ? 'El correo debe contener un "@"' : '',
+      telefono: telefono && !validarTelefono(telefono) ? 'El teléfono debe tener entre 8 y 12 dígitos' : '',
       rut: !rut ? 'Debes ingresar tu RUT' : '',
     };
 
@@ -108,6 +119,7 @@ export default function EditarUsuarioScreen() {
         nombres,
         apellidos,
         correo,
+        telefono: telefono || '',
         rut,
         rol: esConductor ? 'Conductor' : 'Apoderado',
         actualizadoEn: serverTimestamp(),
@@ -191,6 +203,18 @@ export default function EditarUsuarioScreen() {
               onChangeText={setCorreo}
             />
             {errores.correo ? <Text style={styles.errorText}>{errores.correo}</Text> : null}
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Teléfono</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ingresa tu teléfono (ej: +56 9 1234 5678)"
+              keyboardType="phone-pad"
+              value={telefono}
+              onChangeText={setTelefono}
+            />
+            {errores.telefono ? <Text style={styles.errorText}>{errores.telefono}</Text> : null}
           </View>
 
           <View style={styles.inputGroup}>

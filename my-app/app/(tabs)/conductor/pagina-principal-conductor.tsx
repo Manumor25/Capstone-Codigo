@@ -3,20 +3,29 @@ import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Link, useRouter } from 'expo-router';
-import { collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
+import { collection, getDocs, limit, orderBy, query, where, onSnapshot } from 'firebase/firestore';
 import React, { useEffect, useMemo, useState } from 'react';
 import { makeShadow } from '@/utils/shadow';
 import {
   Alert,
-  Image,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableHighlight,
   View,
 } from 'react-native';
+import MapboxDriver from '../../../components/MapboxDriver';
+
+interface Pasajero {
+  id: string;
+  nombreHijo: string;
+  nombreApoderado: string;
+  rutHijo: string;
+  rutApoderado: string;
+  patenteFurgon: string;
+}
 
 export default function PaginaPrincipalConductor() {
   const [menuVisible, setMenuVisible] = useState(false);
@@ -24,6 +33,9 @@ export default function PaginaPrincipalConductor() {
   const [alertas, setAlertas] = useState<any[]>([]);
   const [patentesConductor, setPatentesConductor] = useState<string[]>([]);
   const [ultimaRevisionAlertas, setUltimaRevisionAlertas] = useState<number | null>(null);
+  const [pasajeros, setPasajeros] = useState<Pasajero[]>([]);
+  const [siguienteNino, setSiguienteNino] = useState<Pasajero | null>(null);
+  const [rutConductor, setRutConductor] = useState<string>('');
   useSyncRutActivo();
   const router = useRouter();
   const hayAlertasSinRevisar = useMemo(() => {
@@ -33,86 +45,234 @@ export default function PaginaPrincipalConductor() {
     return masReciente ? masReciente.getTime() > ultimaRevisionAlertas : false;
   }, [alertas, ultimaRevisionAlertas]);
 
+  const numeroAlertasSinRevisar = useMemo(() => {
+    if (!ultimaRevisionAlertas) {
+      return alertas.length;
+    }
+    return alertas.filter((alerta) => {
+      if (!alerta.fecha) return false;
+      return alerta.fecha.getTime() > ultimaRevisionAlertas;
+    }).length;
+  }, [alertas, ultimaRevisionAlertas]);
+
+  // Función para normalizar RUT
+  const normalizarRut = (rut: string) => rut.replace(/[^0-9kK]/g, '').toUpperCase();
+  
+  // Función para normalizar patente (eliminar espacios y convertir a mayúsculas)
+  const normalizarPatente = (patente: string) => patente.trim().toUpperCase().replace(/\s+/g, '');
+
   useEffect(() => {
-    const cargarAlertas = async () => {
+    let unsubscribeAlertas: (() => void) | null = null;
+
+    const cargarDatos = async () => {
       try {
-        const rutConductor = await AsyncStorage.getItem('rutUsuario');
-        if (!rutConductor) {
+        const rutGuardado = await AsyncStorage.getItem('rutUsuario');
+        if (!rutGuardado) {
           setAlertas([]);
           return;
         }
+        
+        const rutNormalizado = normalizarRut(rutGuardado);
+        console.log('RUT guardado:', rutGuardado);
+        console.log('RUT normalizado:', rutNormalizado);
+        setRutConductor(rutGuardado);
 
         const patentesSet = new Set<string>();
         try {
           const furgonesRef = collection(db, 'Furgones');
-          const furgonesSnapshot = await getDocs(query(furgonesRef, where('rutUsuario', '==', rutConductor)));
+          // Intentar buscar por RUT normalizado y también por RUT original
+          const furgonesSnapshot = await getDocs(query(furgonesRef, where('rutUsuario', '==', rutGuardado)));
           furgonesSnapshot.forEach((docSnap) => {
             const data = docSnap.data() || {};
             const patente = (data.patente || '').toString().trim();
             if (patente) {
-              patentesSet.add(patente);
+              const patenteNormalizada = normalizarPatente(patente);
+              patentesSet.add(patenteNormalizada);
+              patentesSet.add(patente); // También mantener la original
             }
           });
         } catch (errorPatentes) {
           console.error('No se pudieron obtener los furgones del conductor:', errorPatentes);
         }
+        console.log('Patentes del conductor (normalizadas y originales):', Array.from(patentesSet));
         setPatentesConductor(Array.from(patentesSet));
 
-        const alertasRef = collection(db, 'Alertas');
-        let snapshot;
+        // Cargar pasajeros del conductor
         try {
-          const alertasQuery = query(
+          const listaPasajerosRef = collection(db, 'lista_pasajeros');
+          const pasajerosSnapshot = await getDocs(
+            query(listaPasajerosRef, where('rutConductor', '==', rutGuardado))
+          );
+
+          const pasajerosLista: Pasajero[] = [];
+          pasajerosSnapshot.forEach((docSnap) => {
+            const data = docSnap.data() || {};
+            pasajerosLista.push({
+              id: docSnap.id,
+              nombreHijo: data.nombreHijo || 'Sin nombre',
+              nombreApoderado: data.nombreApoderado || 'Sin apoderado',
+              rutHijo: data.rutHijo || '',
+              rutApoderado: data.rutApoderado || '',
+              patenteFurgon: data.patenteFurgon || '',
+            });
+          });
+
+          setPasajeros(pasajerosLista);
+
+          // Obtener el siguiente niño (el primero de la lista)
+          if (pasajerosLista.length > 0) {
+            setSiguienteNino(pasajerosLista[0]);
+          }
+        } catch (errorPasajeros) {
+          console.error('Error al cargar pasajeros:', errorPasajeros);
+        }
+
+        // Configurar listener en tiempo real para alertas de postulación
+        console.log('Iniciando listener de alertas de postulación para RUT:', rutGuardado);
+        console.log('Patentes del conductor:', Array.from(patentesSet));
+        
+        const alertasRef = collection(db, 'Alertas');
+        let alertasQuery;
+        try {
+          alertasQuery = query(
             alertasRef,
             where('tipoAlerta', '==', 'Postulacion'),
-            where('rutDestinatario', '==', rutConductor),
+            where('rutDestinatario', '==', rutGuardado),
             orderBy('creadoEn', 'desc'),
-            limit(25)
+            limit(50)
           );
-          snapshot = await getDocs(alertasQuery);
+          console.log('✓ Query con orderBy creada exitosamente');
         } catch (errorConsulta) {
-          snapshot = await getDocs(
-            query(alertasRef, where('tipoAlerta', '==', 'Postulacion'), where('rutDestinatario', '==', rutConductor))
+          console.warn('⚠ Error al crear query con orderBy, usando query simple:', errorConsulta);
+          alertasQuery = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'Postulacion'),
+            where('rutDestinatario', '==', rutGuardado),
+            limit(50)
           );
-          console.warn('Consulta de alertas sin ordenamiento, se aplicará filtrado local:', errorConsulta);
         }
-        const listaFiltrada = snapshot.docs
-          .map((docSnap) => {
-            const data = docSnap.data() as any;
-            const fecha =
-              data.creadoEn && typeof data.creadoEn.toDate === 'function'
-                ? data.creadoEn.toDate()
-                : data.fecha
-                ? new Date(data.fecha)
-                : null;
-            const idPostulacion = data.parametros?.idPostulacion || data.idPostulacion || null;
-            return {
-              id: docSnap.id,
-              descripcion: data.descripcion || 'Sin descripcion',
-              idPostulacion,
-              rutaDestino: data.rutaDestino || '/chat-validacion',
-              parametros: data.parametros || {},
-              fecha,
-              patenteFurgon: (data.patenteFurgon || '').toString().trim(),
-            };
-          })
-          .filter((alerta) => {
-            if (!alerta.idPostulacion) return false;
-            if (!alerta.patenteFurgon) return false;
-            return patentesSet.has(alerta.patenteFurgon);
-          })
-          .sort((a, b) => {
-            const fechaA = a.fecha ? a.fecha.getTime() : 0;
-            const fechaB = b.fecha ? b.fecha.getTime() : 0;
-            return fechaB - fechaA;
-          });
-        setAlertas(listaFiltrada.slice(0, 10));
+
+        // Usar onSnapshot para actualización en tiempo real
+        unsubscribeAlertas = onSnapshot(
+          alertasQuery,
+          (snapshot) => {
+            console.log('✓ Snapshot recibido con', snapshot.docs.length, 'alertas de postulación');
+            
+            if (snapshot.empty) {
+              console.log('No hay alertas de postulación en la base de datos para este RUT');
+              setAlertas([]);
+              return;
+            }
+            
+            const todasLasAlertas = snapshot.docs.map((docSnap) => {
+              const data = docSnap.data() as any;
+              const fecha =
+                data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha
+                  ? new Date(data.fecha)
+                  : null;
+              const idPostulacion = data.parametros?.idPostulacion || data.idPostulacion || null;
+              return {
+                id: docSnap.id,
+                descripcion: data.descripcion || 'Sin descripcion',
+                idPostulacion,
+                rutaDestino: data.rutaDestino || '/chat-validacion',
+                parametros: data.parametros || {},
+                fecha,
+                patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+              };
+            });
+            
+            console.log('✓ Todas las alertas de postulación recibidas:', todasLasAlertas.length);
+            console.log('✓ Patentes en las alertas:', todasLasAlertas.map(a => a.patenteFurgon).filter(Boolean));
+            console.log('✓ Patentes del conductor:', Array.from(patentesSet));
+
+            // Filtrar alertas por patentes del conductor (comparando normalizadas)
+            const listaFiltrada = todasLasAlertas.filter((alerta) => {
+              if (!alerta.idPostulacion) {
+                console.log('⚠ Alerta sin idPostulacion:', alerta.id);
+                return false;
+              }
+              if (!alerta.patenteFurgon) {
+                console.log('⚠ Alerta sin patenteFurgon:', alerta.id);
+                return false;
+              }
+              
+              // Normalizar patente de la alerta
+              const patenteAlertaNormalizada = normalizarPatente(alerta.patenteFurgon);
+              
+              // Verificar si la patente normalizada o la original está en el conjunto
+              const tienePatente = patentesSet.has(alerta.patenteFurgon) || patentesSet.has(patenteAlertaNormalizada);
+              
+              if (!tienePatente) {
+                console.log('✗ Alerta filtrada por patente:', alerta.patenteFurgon, 'normalizada:', patenteAlertaNormalizada);
+                console.log('  Patentes disponibles:', Array.from(patentesSet));
+              } else {
+                console.log('✓ Alerta aceptada - patente coincide:', alerta.patenteFurgon);
+              }
+              
+              return tienePatente;
+            });
+            
+            const alertasOrdenadas = listaFiltrada.sort((a, b) => {
+              const fechaA = a.fecha ? a.fecha.getTime() : 0;
+              const fechaB = b.fecha ? b.fecha.getTime() : 0;
+              return fechaB - fechaA;
+            });
+            
+            console.log('✓ Alertas finales después de filtrado:', alertasOrdenadas.length);
+            if (alertasOrdenadas.length > 0) {
+              console.log('✓ Alertas mostradas:', alertasOrdenadas.map(a => ({ descripcion: a.descripcion.substring(0, 30), patente: a.patenteFurgon })));
+            }
+            
+            setAlertas(alertasOrdenadas.slice(0, 10));
+          },
+          (error) => {
+            console.error('✗ Error en listener de alertas de postulación:', error);
+            console.error('Detalles del error:', error.message, error.code);
+            if (error.code === 'permission-denied') {
+              console.error('Error de permisos: Verificar reglas de seguridad de Firestore');
+            }
+          }
+        );
       } catch (error) {
-        console.error('Error al cargar alertas:', error);
-        Alert.alert('Error', 'No se pudieron cargar las alertas.');
+        console.error('Error al cargar datos:', error);
+        Alert.alert('Error', 'No se pudieron cargar los datos.');
       }
     };
-    cargarAlertas();
+
+    cargarDatos();
+
+    // Limpiar listener al desmontar
+    return () => {
+      if (unsubscribeAlertas) {
+        unsubscribeAlertas();
+      }
+    };
   }, []);
+
+  const handleGenerarRuta = () => {
+    Alert.alert('Generar Ruta', 'Función de generar ruta en desarrollo');
+  };
+
+  const handleRutaSugerida = () => {
+    Alert.alert('Ruta Sugerida', 'Función de ruta sugerida en desarrollo');
+  };
+
+  const handlePickUp = () => {
+    if (siguienteNino) {
+      Alert.alert('Pick Up', `Recogiendo a ${siguienteNino.nombreHijo}`);
+      // Aquí puedes agregar la lógica para marcar como recogido
+    }
+  };
+
+  const handleDropOff = () => {
+    if (siguienteNino) {
+      Alert.alert('Drop Off', `Dejando a ${siguienteNino.nombreHijo}`);
+      // Aquí puedes agregar la lógica para marcar como dejado
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -121,7 +281,12 @@ export default function PaginaPrincipalConductor() {
         <Pressable onPress={() => setMenuVisible(!menuVisible)} style={styles.iconButton}>
           <Ionicons name="menu" size={28} color="#fff" />
         </Pressable>
-        <View style={styles.headerCenter} />
+        <Pressable
+          onPress={() => router.replace('/(tabs)/conductor/pagina-principal-conductor')}
+          style={styles.inicioButton}
+        >
+          <Text style={styles.inicioText}>Inicio</Text>
+        </Pressable>
         <Pressable
           onPress={() => {
             setAlertasVisible((prev) => {
@@ -143,9 +308,13 @@ export default function PaginaPrincipalConductor() {
               size={28}
               color={alertasVisible ? '#1dbb7f' : '#fff'}
             />
-            {hayAlertasSinRevisar && !alertasVisible ? (
-              <View style={styles.notificationDot} />
-            ) : null}
+            {numeroAlertasSinRevisar > 0 && !alertasVisible && (
+              <View style={styles.notificationBadge}>
+                <Text style={styles.notificationBadgeText}>
+                  {numeroAlertasSinRevisar > 9 ? '9+' : numeroAlertasSinRevisar}
+                </Text>
+              </View>
+            )}
           </View>
         </Pressable>
       </View>
@@ -229,13 +398,71 @@ export default function PaginaPrincipalConductor() {
         </View>
       )}
 
-      {/* Imagen del mapa */}
+      {/* Mapa del conductor */}
       <View style={styles.mapaContainer}>
-        <Image
-          source={require('@/assets/images/mapa-img.jpg')}
-          style={styles.mapaImage}
-          resizeMode="cover"
+        <MapboxDriver
+          accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
+          simulatedPath={[
+            { latitude: -33.4495, longitude: -70.667 },
+            { latitude: -33.4498, longitude: -70.6665 },
+            { latitude: -33.4502, longitude: -70.6660 },
+            { latitude: -33.4506, longitude: -70.6655 },
+          ]}
         />
+      </View>
+
+      {/* Panel de control blanco */}
+      <View style={styles.controlPanel}>
+        {/* Botones de ruta */}
+        <View style={styles.routeButtons}>
+          <TouchableHighlight
+            style={styles.routeButton}
+            underlayColor="#0c5c4e"
+            onPress={handleGenerarRuta}
+          >
+            <Text style={styles.routeButtonText}>Generar Ruta</Text>
+          </TouchableHighlight>
+          <TouchableHighlight
+            style={styles.routeButton}
+            underlayColor="#0c5c4e"
+            onPress={handleRutaSugerida}
+          >
+            <Text style={styles.routeButtonText}>Ruta Sugerida</Text>
+          </TouchableHighlight>
+        </View>
+
+        {/* Sección Siguiente niño */}
+        <View style={styles.nextChildSection}>
+          <Text style={styles.nextChildLabel}>Siguiente niño</Text>
+          <View style={styles.nextChildContent}>
+            <View style={styles.childNameContainer}>
+              <TextInput
+                style={styles.childNameInput}
+                value={siguienteNino ? siguienteNino.nombreHijo : 'No hay niños asignados'}
+                editable={false}
+                placeholder="Nombre del niño"
+              />
+            </View>
+            <View style={styles.actionButtons}>
+              <TouchableHighlight
+                style={styles.actionButton}
+                underlayColor="#0c5c4e"
+                onPress={handlePickUp}
+                disabled={!siguienteNino}
+              >
+                <Text style={styles.actionButtonText}>Pick Up</Text>
+              </TouchableHighlight>
+              <TouchableHighlight
+                style={styles.actionButton}
+                underlayColor="#0c5c4e"
+                onPress={handleDropOff}
+                disabled={!siguienteNino}
+              >
+                <Text style={styles.actionButtonText}>Drop Off</Text>
+              </TouchableHighlight>
+            </View>
+          </View>
+        </View>
       </View>
     </View>
   );
@@ -280,7 +507,37 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: '#ff5a5f',
   },
+  notificationBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#ff5a5f',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    borderWidth: 2,
+    borderColor: '#127067',
+  },
+  notificationBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
   headerCenter: { flex: 1 },
+  inicioButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  inicioText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
   menu: {
     position: 'absolute',
     top: 90,
@@ -397,10 +654,82 @@ const styles = StyleSheet.create({
     marginTop: 20,
     borderRadius: 15,
     overflow: 'hidden',
+    minHeight: 300,
   },
   mapaImage: {
     width: '100%',
     height: '100%',
     borderRadius: 15,
+  },
+  controlPanel: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    ...surfaceShadow,
+  },
+  routeButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 20,
+  },
+  routeButton: {
+    flex: 1,
+    backgroundColor: '#127067',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  routeButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  nextChildSection: {
+    marginTop: 10,
+  },
+  nextChildLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 12,
+  },
+  nextChildContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  childNameContainer: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#127067',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#F5F7F8',
+  },
+  childNameInput: {
+    fontSize: 16,
+    color: '#333',
+    fontWeight: '500',
+  },
+  actionButtons: {
+    flexDirection: 'column',
+    gap: 8,
+  },
+  actionButton: {
+    backgroundColor: '#127067',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  actionButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
