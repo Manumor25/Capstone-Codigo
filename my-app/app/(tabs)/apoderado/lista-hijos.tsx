@@ -114,6 +114,13 @@ export default function ListaHijosScreen() {
     });
   };
 
+  const handleVerFichaMedica = (hijo: Hijo) => {
+    router.push({
+      pathname: '/(tabs)/apoderado/Ver-ficha-medica',
+      params: { id: hijo.id },
+    });
+  };
+
   const mostrarModal = (
     tipo: 'confirmacion' | 'advertencia' | 'exito' | 'error',
     titulo: string,
@@ -340,6 +347,14 @@ export default function ListaHijosScreen() {
           <Text style={styles.info}>Nacimiento: {item.fechaNacimiento}</Text>
         </View>
         <View style={styles.buttonsContainer}>
+          <TouchableHighlight
+            style={[styles.verFichaButton, isBorrando && styles.buttonDisabled]}
+            underlayColor="#0e5b52"
+            onPress={() => !isBorrando && handleVerFichaMedica(item)}
+            disabled={isBorrando}
+          >
+            <Text style={styles.verFichaButtonText}>Ver Ficha médica</Text>
+          </TouchableHighlight>
           <TouchableHighlight
             style={[styles.editButton, isBorrando && styles.buttonDisabled]}
             underlayColor="#0e5b52"
@@ -606,15 +621,30 @@ const styles = StyleSheet.create({
   buttonsContainer: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    gap: 10,
+    gap: 8,
     marginTop: 8,
+    flexWrap: 'wrap',
+  },
+  verFichaButton: {
+    backgroundColor: '#127067',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 15,
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 100,
+  },
+  verFichaButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '500',
   },
   editButton: {
     backgroundColor: '#127067',
     paddingVertical: 8,
     paddingHorizontal: 16,
     borderRadius: 15,
-    minWidth: 80,
+    minWidth: 70,
     alignItems: 'center',
   },
   editButtonText: {

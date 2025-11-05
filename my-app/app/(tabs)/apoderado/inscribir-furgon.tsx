@@ -1,24 +1,24 @@
-import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  TouchableHighlight,
-  StyleSheet,
-  Alert,
-  Modal,
-  Pressable,
-  ActivityIndicator,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { db } from '@/firebaseConfig';
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
-import { addDoc, collection, getDocs, doc, getDoc, query, where, limit, serverTimestamp } from 'firebase/firestore';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { makeShadow } from '@/utils/shadow';
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Picker } from '@react-native-picker/picker';
 import CryptoJS from 'crypto-js';
-import { makeShadow } from '@/utils/shadow';
+import { Image } from 'expo-image';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { addDoc, collection, doc, getDoc, getDocs, limit, query, serverTimestamp, where } from 'firebase/firestore';
+import React, { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableHighlight,
+  View,
+} from 'react-native';
 
 interface Hijo {
   id: string;
@@ -320,12 +320,15 @@ export default function PostularFurgon() {
           
           console.log('Consulta combinada encontrada:', combinadaSnap.docs.length, 'registros');
           
-          // Filtrar solo registros activos (estado 'aceptada' o sin estado de baja)
+          // Filtrar solo registros activos (estado 'aceptada' o 'activa', sin fecha de baja)
           const registrosActivos = combinadaSnap.docs.filter((docSnap) => {
             const data = docSnap.data() || {};
             const estado = (data.estado || 'aceptada').toString().toLowerCase();
-            // Solo considerar activos si el estado es 'aceptada' o no tiene estado de baja
-            return estado === 'aceptada' || estado === 'activa' || !data.fechaBaja;
+            const tieneFechaBaja = !!data.fechaBaja;
+            const estadoDeBaja = estado === 'baja' || estado === 'cancelada';
+            
+            // Solo considerar activos si el estado es 'aceptada' o 'activa' Y no tiene fecha de baja
+            return (estado === 'aceptada' || estado === 'activa') && !tieneFechaBaja && !estadoDeBaja;
           });
           
           console.log('Registros activos encontrados:', registrosActivos.length);
@@ -350,7 +353,11 @@ export default function PostularFurgon() {
             if (rutDoc !== objetivoRut) return false;
             
             const estado = (data.estado || 'aceptada').toString().toLowerCase();
-            return estado === 'aceptada' || estado === 'activa' || !data.fechaBaja;
+            const tieneFechaBaja = !!data.fechaBaja;
+            const estadoDeBaja = estado === 'baja' || estado === 'cancelada';
+            
+            // Solo considerar activos si el estado es 'aceptada' o 'activa' Y no tiene fecha de baja
+            return (estado === 'aceptada' || estado === 'activa') && !tieneFechaBaja && !estadoDeBaja;
           });
           
           coincidencias = recolectarCoincidencias(registrosActivos);
@@ -374,7 +381,11 @@ export default function PostularFurgon() {
             if (rutDocApoderado !== rutDocUsuario) return false;
             
             const estado = (data.estado || 'aceptada').toString().toLowerCase();
-            return estado === 'aceptada' || estado === 'activa' || !data.fechaBaja;
+            const tieneFechaBaja = !!data.fechaBaja;
+            const estadoDeBaja = estado === 'baja' || estado === 'cancelada';
+            
+            // Solo considerar activos si el estado es 'aceptada' o 'activa' Y no tiene fecha de baja
+            return (estado === 'aceptada' || estado === 'activa') && !tieneFechaBaja && !estadoDeBaja;
           });
           
           coincidencias = recolectarCoincidencias(registrosActivos);
@@ -391,10 +402,23 @@ export default function PostularFurgon() {
       };
 
       const coincidenciasLista = await obtenerCoincidenciasListaPasajeros();
+      console.log('Resultado de validación lista_pasajeros:', {
+        coincidencias: coincidenciasLista.length,
+        patentes: Array.from(patentesRegistradas),
+        rutHijo: rutHijoSeleccionado,
+        rutUsuario,
+      });
+      
       if (coincidenciasLista.length > 0) {
         const detallePatentes = Array.from(patentesRegistradas).join(', ');
         const mensajeExtra = detallePatentes.length > 0 ? ` Actualmente figura en: ${detallePatentes}.` : '';
-        console.log('Bloqueando postulación: Hijo ya inscrito activamente');
+        console.log('⚠️ Bloqueando postulación: Hijo ya inscrito activamente en lista_pasajeros');
+        console.log('Detalles de coincidencias:', coincidenciasLista.map(c => ({
+          id: c.id,
+          estado: c.data()?.estado,
+          fechaBaja: c.data()?.fechaBaja,
+          patente: c.data()?.patenteFurgon,
+        })));
         mostrarBloqueo(
           `Este hijo ya esta inscrito en un furgon.${mensajeExtra} Comunicate con el tio del furgon para salirse antes de intentar una nueva postulacion.`,
         );
@@ -418,13 +442,39 @@ export default function PostularFurgon() {
         postulacionesAceptadasSnap = await getDocs(query(postulacionesRef, where('rutHijo', '==', rutHijoSeleccionado)));
       }
 
+      // Filtrar solo postulaciones aceptadas que NO estén en estado 'baja' o 'cancelada'
       const postulacionesAceptadas = postulacionesAceptadasSnap.docs.filter((docSnap) => {
         const data = docSnap.data() || {};
         const estado = (data.estado || '').toString().toLowerCase();
-        return estado === 'aceptada' && normalizarRut((data.rutHijo || '').toString()) === objetivoRut;
+        const rutDoc = normalizarRut((data.rutHijo || '').toString());
+        const rutUsuarioDoc = normalizarRut((data.rutUsuario || '').toString());
+        const rutUsuarioNormalizado = normalizarRut(rutUsuario);
+        
+        // Solo considerar postulaciones aceptadas que NO estén dadas de baja
+        // Y que pertenezcan al mismo apoderado
+        const esAceptada = estado === 'aceptada';
+        const noEstaDeBaja = estado !== 'baja' && estado !== 'cancelada';
+        const coincideRut = rutDoc === objetivoRut;
+        const coincideApoderado = rutUsuarioDoc === rutUsuarioNormalizado;
+        const noTieneFechaBaja = !data.fechaBaja;
+        
+        return esAceptada && noEstaDeBaja && coincideRut && coincideApoderado && noTieneFechaBaja;
+      });
+
+      console.log('Resultado de validación Postulaciones:', {
+        postulacionesAceptadas: postulacionesAceptadas.length,
+        rutHijo: rutHijoSeleccionado,
+        rutUsuario,
       });
 
       if (postulacionesAceptadas.length > 0) {
+        console.log('⚠️ Bloqueando postulación: Hay postulaciones aceptadas activas');
+        console.log('Detalles de postulaciones aceptadas:', postulacionesAceptadas.map(p => ({
+          id: p.id,
+          estado: p.data()?.estado,
+          fechaBaja: p.data()?.fechaBaja,
+          patente: p.data()?.patenteFurgon,
+        })));
         mostrarBloqueo(
           'Este hijo ya esta inscrito en un furgon. Comunicate con el tio del furgon para salirse antes de intentar una nueva postulacion.',
         );
@@ -448,21 +498,49 @@ export default function PostularFurgon() {
 
       const nombreApoderado = await obtenerNombreApoderado();
       
+      // Normalizar el RUT del conductor para que coincida con la búsqueda
+      const rutConductorNormalizado = normalizarRut(rutConductor);
+      
       console.log('Creando alerta de postulación:');
-      console.log('- RUT Conductor (destinatario):', rutConductor);
+      console.log('- RUT Conductor (original):', rutConductor);
+      console.log('- RUT Conductor (normalizado):', rutConductorNormalizado);
       console.log('- Patente Furgón:', patenteFurgon);
       console.log('- ID Postulación:', postulacionDoc.id);
       console.log('- Nombre Apoderado:', nombreApoderado);
       
+      // Crear mensaje inicial en el chat
+      const mensajeInicial = `Hola, me gustaría inscribir a mi hijo ${hijos.find(h => h.id === hijoSeleccionado)?.nombres || ''} en tu furgón.`;
+      
+      const participantesChat = [rutUsuario, rutConductor].filter(Boolean);
+      
+      // Crear mensaje inicial en el chat
+      try {
+        await addDoc(collection(db, 'MensajesChat'), {
+          idPostulacion: postulacionDoc.id,
+          texto: mensajeInicial,
+          emisor: rutUsuario,
+          receptor: rutConductor,
+          participantes: participantesChat,
+          fecha: new Date().toISOString(),
+          creadoEn: serverTimestamp(),
+        });
+        console.log('✓ Mensaje inicial creado en el chat');
+      } catch (errorMensaje) {
+        console.error('Error al crear mensaje inicial:', errorMensaje);
+        // Continuar aunque falle el mensaje
+      }
+      
       const alertaData = {
         tipoAlerta: 'Postulacion',
         descripcion: (nombreApoderado || 'Un apoderado') + ' esta postulando a tu furgon',
-        rutDestinatario: rutConductor,
+        rutDestinatario: rutConductorNormalizado, // Usar RUT normalizado para búsqueda
+        rutDestinatarioOriginal: rutConductor, // Guardar también el original por compatibilidad
         rutaDestino: '/chat-validacion',
         parametros: {
           idPostulacion: postulacionDoc.id,
           rutPadre: rutUsuario,
-          rutConductor,
+          rutConductor: rutConductorNormalizado, // También normalizar en parámetros
+          rutConductorOriginal: rutConductor, // Guardar original también
           rutHijo: rutHijoSeleccionado,
           patenteFurgon,
         },

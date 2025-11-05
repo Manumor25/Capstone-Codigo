@@ -1,19 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  Pressable,
   StyleSheet,
   Text,
-  View,
   TextInput,
-  Pressable,
-  Alert,
-  ActivityIndicator,
-  Platform,
+  View,
 } from 'react-native';
-import { Image } from 'expo-image';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 
 interface DatosHijoDraft {
   nombres: string;
@@ -114,7 +114,7 @@ export default function AddChildScreen() {
       if (!rutPattern.test(rutFormateado) && rutFormateado.length > 3) {
         setErrores(prev => ({
           ...prev,
-          rut: 'Formato de RUT inválido. Debe ser: 00.000.000-K'
+          rut: 'Formato de RUT inválido.'
         }));
       } else {
         setErrores(prev => ({
@@ -235,6 +235,13 @@ export default function AddChildScreen() {
         fechaNacimiento: ''
       }));
     }
+  };
+
+  // Función para manejar el cambio de edad: solo números
+  const manejarCambioEdad = (text: string) => {
+    // Permitir solo números
+    const edadFiltrada = text.replace(/[^0-9]/g, '');
+    setEdad(edadFiltrada);
   };
 
   // Función para abrir el calendario
@@ -358,7 +365,7 @@ export default function AddChildScreen() {
     const nuevosErrores = {
       nombres: !nombres ? 'Ingresa el nombre del hijo' : '',
       apellidos: !apellidos ? 'Ingresa el apellido' : '',
-      rut: !rut ? 'Ingresa el RUT del hijo' : !rutValido ? 'Formato de RUT inválido. Debe ser: 00.000.000-K' : '',
+      rut: !rut ? 'Ingresa el RUT del hijo' : !rutValido ? 'Formato de RUT inválido.' : '',
       fechaNacimiento: !fechaNacimiento ? 'Ingresa la fecha de nacimiento' : !fechaValida ? 'Formato de fecha inválido. Use: dd/mm/yyyy' : '',
       edad: !edad ? 'Ingresa la edad' : '',
     };
@@ -432,7 +439,7 @@ export default function AddChildScreen() {
 
       <TextInput
         style={[styles.input, errores.rut ? styles.inputError : null]}
-        placeholder="RUT del hijo (00.000.000-K)"
+        placeholder="RUT del hijo"
         value={rut}
         onChangeText={manejarCambioRUT}
         maxLength={12}
@@ -463,7 +470,7 @@ export default function AddChildScreen() {
         placeholder="Edad"
         value={edad}
         keyboardType="numeric"
-        onChangeText={setEdad}
+        onChangeText={manejarCambioEdad}
       />
       {errores.edad ? <Text style={styles.errorText}>{errores.edad}</Text> : null}
 

@@ -1,20 +1,20 @@
-import React, { useState, useEffect } from 'react';
+import { db } from '@/firebaseConfig';
+import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Image } from 'expo-image';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { doc, getDoc } from 'firebase/firestore';
+import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
   StyleSheet,
   Text,
-  View,
   TextInput,
-  Pressable,
-  Alert,
-  ActivityIndicator,
+  View,
 } from 'react-native';
-import { Image } from 'expo-image';
-import { db } from '@/firebaseConfig';
-import { doc, getDoc } from 'firebase/firestore';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 
 export default function EditarHijoScreen() {
   const router = useRouter();
@@ -53,6 +53,13 @@ export default function EditarHijoScreen() {
 
     obtenerRutUsuario();
   }, []);
+
+  // Función para manejar el cambio de edad: solo números
+  const manejarCambioEdad = (text: string) => {
+    // Permitir solo números
+    const edadFiltrada = text.replace(/[^0-9]/g, '');
+    setEdad(edadFiltrada);
+  };
 
   const manejarContinuar = async () => {
     const nuevosErrores = {
@@ -173,7 +180,7 @@ export default function EditarHijoScreen() {
         placeholder="Edad"
         value={edad}
         keyboardType="numeric"
-        onChangeText={setEdad}
+        onChangeText={manejarCambioEdad}
       />
       {errores.edad ? <Text style={styles.errorText}>{errores.edad}</Text> : null}
 

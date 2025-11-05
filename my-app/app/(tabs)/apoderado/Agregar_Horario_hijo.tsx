@@ -1,4 +1,4 @@
-import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
+﻿import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Checkbox from 'expo-checkbox';
@@ -42,7 +42,7 @@ export default function AgregarHorarioHijoScreen() {
       try {
         const hijoDraft = await AsyncStorage.getItem('nuevoHijoData');
         if (!hijoDraft) {
-          Alert.alert('Faltan datos', 'Primero completa la informaci�n del ni�o.');
+          Alert.alert('Faltan datos', 'Primero completa la información del niño.');
           router.replace('/(tabs)/apoderado/Agregar-hijo');
           return;
         }
@@ -67,9 +67,40 @@ export default function AgregarHorarioHijoScreen() {
     );
   };
 
+  // Función para formatear hora automáticamente (HH:MM)
+  const formatearHora = (text: string): string => {
+    // Remover todo excepto números
+    let numeros = text.replace(/[^0-9]/g, '');
+    
+    // Si no hay nada, retornar vacío
+    if (numeros.length === 0) {
+      return '';
+    }
+    
+    // Limitar a máximo 4 dígitos (HHMM)
+    if (numeros.length > 4) {
+      numeros = numeros.slice(0, 4);
+    }
+    
+    // Formatear según la longitud
+    if (numeros.length <= 2) {
+      // Si tiene 1 o 2 dígitos, solo mostrar los números
+      return numeros;
+    } else {
+      // Si tiene 3 o 4 dígitos, agregar los dos puntos
+      // Formato: HH:MM
+      const horas = numeros.slice(0, 2);
+      const minutos = numeros.slice(2);
+      return horas + ':' + minutos;
+    }
+  };
+
   const actualizarHorario = (id: string, campo: 'horaEntrada' | 'horaSalida', valor: string) => {
+    // Formatear la hora automáticamente
+    const horaFormateada = formatearHora(valor);
+    
     setHorarios((prev) =>
-      prev.map((dia) => (dia.id === id ? { ...dia, [campo]: valor } : dia)),
+      prev.map((dia) => (dia.id === id ? { ...dia, [campo]: horaFormateada } : dia)),
     );
   };
 
@@ -77,7 +108,7 @@ export default function AgregarHorarioHijoScreen() {
     const diasSeleccionados = horarios.filter((dia) => dia.asiste);
 
     if (diasSeleccionados.length === 0) {
-      Alert.alert('Horario incompleto', 'Selecciona al menos un d�a y sus horarios.');
+      Alert.alert('Horario incompleto', 'Selecciona al menos un día y sus horarios.');
       return;
     }
 
@@ -86,7 +117,7 @@ export default function AgregarHorarioHijoScreen() {
     );
 
     if (diasConErrores.length > 0) {
-      Alert.alert('Horario incompleto', 'Completa la hora de entrada y salida para cada d�a seleccionado.');
+      Alert.alert('Horario incompleto', 'Completa la hora de entrada y salida para cada día seleccionado.');
       return;
     }
 
@@ -94,7 +125,7 @@ export default function AgregarHorarioHijoScreen() {
       await AsyncStorage.setItem('nuevoHijoHorario', JSON.stringify(horarios));
       router.push('/(tabs)/apoderado/Agregar-informe_hijo');
     } catch (error) {
-      console.error('Error al guardar el horario del ni�o:', error);
+      console.error('Error al guardar el horario del niño:', error);
       Alert.alert('Error', 'No se pudo guardar el horario localmente.');
     }
   };
@@ -113,8 +144,8 @@ export default function AgregarHorarioHijoScreen() {
         <Ionicons name="arrow-back" size={28} color="#127067" />
       </Pressable>
 
-      <Text style={styles.title}>Horario del ni�o</Text>
-      <Text style={styles.subtitle}>Indica los d�as y horarios en que asiste al colegio.</Text>
+      <Text style={styles.title}>Horario del niño</Text>
+      <Text style={styles.subtitle}>Indica los días y horarios en que asiste al colegio.</Text>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {horarios.map((dia) => (
@@ -137,6 +168,8 @@ export default function AgregarHorarioHijoScreen() {
                     placeholder="HH:MM"
                     value={dia.horaEntrada}
                     onChangeText={(texto) => actualizarHorario(dia.id, 'horaEntrada', texto)}
+                    keyboardType="numeric"
+                    maxLength={5}
                   />
                 </View>
                 <View style={styles.timeGroup}>
@@ -146,6 +179,8 @@ export default function AgregarHorarioHijoScreen() {
                     placeholder="HH:MM"
                     value={dia.horaSalida}
                     onChangeText={(texto) => actualizarHorario(dia.id, 'horaSalida', texto)}
+                    keyboardType="numeric"
+                    maxLength={5}
                   />
                 </View>
               </View>

@@ -1,22 +1,22 @@
-import React, { useEffect, useState } from 'react';
-import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import {
-  StyleSheet,
-  Text,
-  View,
-  TextInput,
-  Pressable,
-  Alert,
-  ActivityIndicator,
-  ScrollView,
-} from 'react-native';
-import { Image } from 'expo-image';
 import { db } from '@/firebaseConfig';
-import { collection, doc, getDocs, query, updateDoc, where, serverTimestamp } from 'firebase/firestore';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { makeShadow } from '@/utils/shadow';
+import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Image } from 'expo-image';
+import { useRouter } from 'expo-router';
+import { collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import React, { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 export default function EditarDatosApoderadoScreen() {
   const router = useRouter();
@@ -25,6 +25,7 @@ export default function EditarDatosApoderadoScreen() {
   const [nombres, setNombres] = useState('');
   const [apellidos, setApellidos] = useState('');
   const [correo, setCorreo] = useState('');
+  const [telefono, setTelefono] = useState('');
   const [rut, setRut] = useState('');
   const [direccion, setDireccion] = useState('');
   const [rutUsuario, setRutUsuario] = useState('');
@@ -36,6 +37,7 @@ export default function EditarDatosApoderadoScreen() {
     nombres: '',
     apellidos: '',
     correo: '',
+    telefono: '',
     rut: '',
     direccion: '',
   });
@@ -68,6 +70,7 @@ export default function EditarDatosApoderadoScreen() {
         setNombres(data.nombres || '');
         setApellidos(data.apellidos || '');
         setCorreo(data.correo || '');
+        setTelefono(data.telefono || '');
         setRut(data.rut || '');
         setDireccion(data.direccion || '');
       } catch (error) {
@@ -83,11 +86,47 @@ export default function EditarDatosApoderadoScreen() {
 
   const validarEmail = (email: string) => email.includes('@');
 
+  // Función para filtrar el teléfono: solo números y + al inicio
+  const manejarCambioTelefono = (text: string) => {
+    // Permitir solo números y el símbolo +
+    let textoFiltrado = text.replace(/[^0-9+]/g, '');
+    
+    // Si hay un +, solo permitirlo al inicio
+    if (textoFiltrado.includes('+')) {
+      // Si el + no está al inicio, moverlo al inicio o eliminarlo
+      const tieneMasAlInicio = textoFiltrado.startsWith('+');
+      const numeros = textoFiltrado.replace(/\+/g, '');
+      
+      if (tieneMasAlInicio) {
+        textoFiltrado = '+' + numeros;
+      } else {
+        // Si el + no está al inicio, solo dejar los números
+        textoFiltrado = numeros;
+      }
+    }
+    
+    setTelefono(textoFiltrado);
+  };
+
+  const validarTelefono = (tel: string) => {
+    // Eliminar espacios, guiones y paréntesis
+    let telefonoLimpio = tel.replace(/[\s\-\(\)]/g, '');
+    
+    // Si tiene + al inicio, removerlo para contar dígitos
+    if (telefonoLimpio.startsWith('+')) {
+      telefonoLimpio = telefonoLimpio.substring(1);
+    }
+    
+    // Validar que tenga entre 8 y 12 dígitos
+    return /^\d{8,12}$/.test(telefonoLimpio);
+  };
+
   const manejarActualizar = async () => {
     const nuevosErrores = {
       nombres: !nombres ? 'Debes ingresar tu nombre' : '',
       apellidos: !apellidos ? 'Debes ingresar tu apellido' : '',
       correo: !validarEmail(correo) ? 'El correo debe contener un "@"' : '',
+      telefono: !telefono ? 'Debes ingresar tu número telefónico' : (!validarTelefono(telefono) ? 'El teléfono debe tener entre 8 y 12 dígitos' : ''),
       rut: !rut ? 'Debes ingresar tu RUT' : '',
       direccion: !direccion ? 'Debes ingresar tu dirección' : '',
     };
@@ -108,6 +147,7 @@ export default function EditarDatosApoderadoScreen() {
         nombres,
         apellidos,
         correo,
+        telefono,
         rut,
         direccion,
         rol: 'Apoderado',
@@ -186,6 +226,18 @@ export default function EditarDatosApoderadoScreen() {
               keyboardType="email-address"
             />
             {errores.correo ? <Text style={styles.errorText}>{errores.correo}</Text> : null}
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Número Celular</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ingresa tu número celular"
+              value={telefono}
+              onChangeText={manejarCambioTelefono}
+              keyboardType="phone-pad"
+            />
+            {errores.telefono ? <Text style={styles.errorText}>{errores.telefono}</Text> : null}
           </View>
 
           <View style={styles.inputGroup}>

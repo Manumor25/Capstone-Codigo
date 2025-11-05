@@ -130,9 +130,40 @@ export default function EditarHorarioHijoScreen() {
     );
   };
 
+  // Función para formatear hora automáticamente (HH:MM)
+  const formatearHora = (text: string): string => {
+    // Remover todo excepto números
+    let numeros = text.replace(/[^0-9]/g, '');
+    
+    // Si no hay nada, retornar vacío
+    if (numeros.length === 0) {
+      return '';
+    }
+    
+    // Limitar a máximo 4 dígitos (HHMM)
+    if (numeros.length > 4) {
+      numeros = numeros.slice(0, 4);
+    }
+    
+    // Formatear según la longitud
+    if (numeros.length <= 2) {
+      // Si tiene 1 o 2 dígitos, solo mostrar los números
+      return numeros;
+    } else {
+      // Si tiene 3 o 4 dígitos, agregar los dos puntos
+      // Formato: HH:MM
+      const horas = numeros.slice(0, 2);
+      const minutos = numeros.slice(2);
+      return horas + ':' + minutos;
+    }
+  };
+
   const actualizarHorario = (id: string, campo: 'horaEntrada' | 'horaSalida', valor: string) => {
+    // Formatear la hora automáticamente
+    const horaFormateada = formatearHora(valor);
+    
     setHorarios((prev) =>
-      prev.map((dia) => (dia.id === id ? { ...dia, [campo]: valor } : dia)),
+      prev.map((dia) => (dia.id === id ? { ...dia, [campo]: horaFormateada } : dia)),
     );
   };
 
@@ -203,6 +234,8 @@ export default function EditarHorarioHijoScreen() {
                     placeholder="HH:MM"
                     value={dia.horaEntrada}
                     onChangeText={(texto) => actualizarHorario(dia.id, 'horaEntrada', texto)}
+                    keyboardType="numeric"
+                    maxLength={5}
                   />
                 </View>
                 <View style={styles.timeGroup}>
@@ -212,6 +245,8 @@ export default function EditarHorarioHijoScreen() {
                     placeholder="HH:MM"
                     value={dia.horaSalida}
                     onChangeText={(texto) => actualizarHorario(dia.id, 'horaSalida', texto)}
+                    keyboardType="numeric"
+                    maxLength={5}
                   />
                 </View>
               </View>

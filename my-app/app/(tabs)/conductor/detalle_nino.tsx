@@ -1,7 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
   addDoc,
   collection,
@@ -14,25 +12,18 @@ import {
   serverTimestamp,
   where,
 } from 'firebase/firestore';
-import CryptoJS from 'crypto-js';
-import * as WebBrowser from 'expo-web-browser';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { db } from '@/firebaseConfig';
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 
-interface FichaMedica {
-  nombreArchivo?: string;
-  contenidoCifrado?: string;
-}
-
 interface DatosNino {
   nombres: string;
   apellidos: string;
-  fichaMedica?: FichaMedica;
+  fichaMedica?: any;
   rutApoderado?: string;
 }
-
-const ENCRYPTION_SALT = 'RUTA_SEGURA_V1';
 
 export default function DetalleNinoScreen() {
   const router = useRouter();
@@ -140,32 +131,17 @@ export default function DetalleNinoScreen() {
     cargarDatos();
   }, [rutNino, router, rutApoderadoParam, nombreFurgonParam, patenteFurgonParam, listaPasajeroId]);
 
-  const manejarDescargarFicha = async () => {
-    if (!datosNino?.fichaMedica?.contenidoCifrado) {
-      Alert.alert('No disponible', 'Este niño aún no tiene ficha médica asociada.');
+  const manejarVerFichaMedica = () => {
+    if (!rutNino) {
+      Alert.alert('Error', 'No se pudo identificar al niño.');
       return;
     }
 
-    if (!datosNino.rutApoderado) {
-      Alert.alert('Error', 'No se pudo determinar el apoderado asociado.');
-      return;
-    }
-
-    try {
-      const clave = `${datosNino.rutApoderado}-${ENCRYPTION_SALT}`;
-      const bytes = CryptoJS.AES.decrypt(datosNino.fichaMedica.contenidoCifrado, clave);
-      const base64 = bytes.toString(CryptoJS.enc.Utf8);
-
-      if (!base64) {
-        throw new Error('Archivo vacío después de descifrar.');
-      }
-
-      const dataUrl = `data:application/pdf;base64,${base64}`;
-      await WebBrowser.openBrowserAsync(dataUrl);
-    } catch (error) {
-      console.error('Error al descargar la ficha médica:', error);
-      Alert.alert('Error', 'No se pudo preparar la ficha médica para su descarga.');
-    }
+    // Navegar a la página de visualización de ficha médica
+    router.push({
+      pathname: '/(tabs)/apoderado/Ver-ficha-medica',
+      params: { id: rutNino },
+    });
   };
 
   const expulsarNino = async () => {
@@ -424,8 +400,8 @@ export default function DetalleNinoScreen() {
         </View>
       </View>
 
-      <Pressable style={styles.actionButton} onPress={manejarDescargarFicha}>
-        <Text style={styles.actionText}>Descargar ficha médica</Text>
+      <Pressable style={styles.actionButton} onPress={manejarVerFichaMedica}>
+        <Text style={styles.actionText}>Ver Ficha médica</Text>
       </Pressable>
 
       <Pressable style={styles.actionButton} onPress={manejarContactarApoderado}>

@@ -1,11 +1,11 @@
 import { db } from '@/firebaseConfig';
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
+import { makeShadow } from '@/utils/shadow';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Link, useRouter } from 'expo-router';
-import { collection, getDocs, limit, orderBy, query, where, onSnapshot } from 'firebase/firestore';
+import { collection, getDocs, limit, onSnapshot, query, where } from 'firebase/firestore';
 import React, { useEffect, useMemo, useState } from 'react';
-import { makeShadow } from '@/utils/shadow';
 import {
   Alert,
   Pressable,
@@ -62,7 +62,9 @@ export default function PaginaPrincipalConductor() {
   const normalizarPatente = (patente: string) => patente.trim().toUpperCase().replace(/\s+/g, '');
 
   useEffect(() => {
-    let unsubscribeAlertas: (() => void) | null = null;
+    let unsubscribeAlertas1: (() => void) | null = null;
+    let unsubscribeAlertas2: (() => void) | null = null;
+    let unsubscribeAlertas3: (() => void) | null = null;
 
     const cargarDatos = async () => {
       try {
@@ -127,115 +129,196 @@ export default function PaginaPrincipalConductor() {
           console.error('Error al cargar pasajeros:', errorPasajeros);
         }
 
-        // Configurar listener en tiempo real para alertas de postulación
-        console.log('Iniciando listener de alertas de postulación para RUT:', rutGuardado);
+        // Configurar listeners en tiempo real para alertas de postulación
+        // Usar múltiples listeners para buscar con diferentes formatos de RUT
+        console.log('Iniciando listeners de alertas de postulación para RUT:', rutGuardado);
+        console.log('RUT normalizado:', rutNormalizado);
         console.log('Patentes del conductor:', Array.from(patentesSet));
         
         const alertasRef = collection(db, 'Alertas');
-        let alertasQuery;
-        try {
-          alertasQuery = query(
-            alertasRef,
-            where('tipoAlerta', '==', 'Postulacion'),
-            where('rutDestinatario', '==', rutGuardado),
-            orderBy('creadoEn', 'desc'),
-            limit(50)
-          );
-          console.log('✓ Query con orderBy creada exitosamente');
-        } catch (errorConsulta) {
-          console.warn('⚠ Error al crear query con orderBy, usando query simple:', errorConsulta);
-          alertasQuery = query(
-            alertasRef,
-            where('tipoAlerta', '==', 'Postulacion'),
-            where('rutDestinatario', '==', rutGuardado),
-            limit(50)
-          );
-        }
+        const todasLasAlertasUnicas = new Map<string, any>();
+        
+        // Función para procesar y combinar alertas
+        const procesarYActualizarAlertas = () => {
+          const alertasArray = Array.from(todasLasAlertasUnicas.values());
+          
+          console.log('✓ Total de alertas únicas encontradas:', alertasArray.length);
+          console.log('✓ Patentes en las alertas:', alertasArray.map(a => a.patenteFurgon).filter(Boolean));
+          console.log('✓ Patentes del conductor:', Array.from(patentesSet));
 
-        // Usar onSnapshot para actualización en tiempo real
-        unsubscribeAlertas = onSnapshot(
-          alertasQuery,
-          (snapshot) => {
-            console.log('✓ Snapshot recibido con', snapshot.docs.length, 'alertas de postulación');
-            
-            if (snapshot.empty) {
-              console.log('No hay alertas de postulación en la base de datos para este RUT');
-              setAlertas([]);
-              return;
+          // Filtrar alertas por RUT del conductor (normalizado) y por patentes
+          const listaFiltrada = alertasArray.filter((alerta) => {
+            // Verificar que tenga idPostulacion
+            if (!alerta.idPostulacion) {
+              console.log('⚠ Alerta sin idPostulacion:', alerta.id);
+              return false;
             }
             
-            const todasLasAlertas = snapshot.docs.map((docSnap) => {
-              const data = docSnap.data() as any;
-              const fecha =
-                data.creadoEn && typeof data.creadoEn.toDate === 'function'
-                  ? data.creadoEn.toDate()
-                  : data.fecha
-                  ? new Date(data.fecha)
-                  : null;
-              const idPostulacion = data.parametros?.idPostulacion || data.idPostulacion || null;
-              return {
-                id: docSnap.id,
-                descripcion: data.descripcion || 'Sin descripcion',
-                idPostulacion,
-                rutaDestino: data.rutaDestino || '/chat-validacion',
-                parametros: data.parametros || {},
-                fecha,
-                patenteFurgon: (data.patenteFurgon || '').toString().trim(),
-              };
-            });
+            // Verificar RUT del destinatario (normalizado o original)
+            const rutDestAlerta = normalizarRut(alerta.rutDestinatario || '');
+            const rutDestOriginal = normalizarRut(alerta.rutDestinatarioOriginal || '');
+            const coincideRut = rutDestAlerta === rutNormalizado || rutDestOriginal === rutNormalizado;
             
-            console.log('✓ Todas las alertas de postulación recibidas:', todasLasAlertas.length);
-            console.log('✓ Patentes en las alertas:', todasLasAlertas.map(a => a.patenteFurgon).filter(Boolean));
-            console.log('✓ Patentes del conductor:', Array.from(patentesSet));
-
-            // Filtrar alertas por patentes del conductor (comparando normalizadas)
-            const listaFiltrada = todasLasAlertas.filter((alerta) => {
-              if (!alerta.idPostulacion) {
-                console.log('⚠ Alerta sin idPostulacion:', alerta.id);
-                return false;
-              }
-              if (!alerta.patenteFurgon) {
-                console.log('⚠ Alerta sin patenteFurgon:', alerta.id);
-                return false;
-              }
-              
-              // Normalizar patente de la alerta
+            if (!coincideRut) {
+              console.log('✗ Alerta filtrada por RUT:', {
+                alertaId: alerta.id,
+                rutDestAlerta: alerta.rutDestinatario,
+                rutDestOriginal: alerta.rutDestinatarioOriginal,
+                rutNormalizado,
+              });
+              return false;
+            }
+            
+            // Verificar patente si existe
+            if (alerta.patenteFurgon) {
               const patenteAlertaNormalizada = normalizarPatente(alerta.patenteFurgon);
-              
-              // Verificar si la patente normalizada o la original está en el conjunto
               const tienePatente = patentesSet.has(alerta.patenteFurgon) || patentesSet.has(patenteAlertaNormalizada);
               
-              if (!tienePatente) {
+              if (!tienePatente && patentesSet.size > 0) {
                 console.log('✗ Alerta filtrada por patente:', alerta.patenteFurgon, 'normalizada:', patenteAlertaNormalizada);
                 console.log('  Patentes disponibles:', Array.from(patentesSet));
-              } else {
-                console.log('✓ Alerta aceptada - patente coincide:', alerta.patenteFurgon);
+                return false;
               }
-              
-              return tienePatente;
-            });
-            
-            const alertasOrdenadas = listaFiltrada.sort((a, b) => {
-              const fechaA = a.fecha ? a.fecha.getTime() : 0;
-              const fechaB = b.fecha ? b.fecha.getTime() : 0;
-              return fechaB - fechaA;
-            });
-            
-            console.log('✓ Alertas finales después de filtrado:', alertasOrdenadas.length);
-            if (alertasOrdenadas.length > 0) {
-              console.log('✓ Alertas mostradas:', alertasOrdenadas.map(a => ({ descripcion: a.descripcion.substring(0, 30), patente: a.patenteFurgon })));
             }
             
-            setAlertas(alertasOrdenadas.slice(0, 10));
-          },
-          (error) => {
-            console.error('✗ Error en listener de alertas de postulación:', error);
-            console.error('Detalles del error:', error.message, error.code);
-            if (error.code === 'permission-denied') {
-              console.error('Error de permisos: Verificar reglas de seguridad de Firestore');
-            }
+            console.log('✓ Alerta aceptada:', {
+              id: alerta.id,
+              descripcion: alerta.descripcion?.substring(0, 30),
+              patente: alerta.patenteFurgon,
+            });
+            return true;
+          });
+          
+          const alertasOrdenadas = listaFiltrada.sort((a, b) => {
+            const fechaA = a.fecha ? a.fecha.getTime() : 0;
+            const fechaB = b.fecha ? b.fecha.getTime() : 0;
+            return fechaB - fechaA;
+          });
+          
+          console.log('✓ Alertas finales después de filtrado:', alertasOrdenadas.length);
+          if (alertasOrdenadas.length > 0) {
+            console.log('✓ Alertas mostradas:', alertasOrdenadas.map(a => ({ 
+              descripcion: a.descripcion?.substring(0, 30), 
+              patente: a.patenteFurgon 
+            })));
           }
-        );
+          
+          setAlertas(alertasOrdenadas.slice(0, 10));
+        };
+
+        // Listener 1: Buscar con RUT normalizado en rutDestinatario
+        try {
+          const query1 = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'Postulacion'),
+            where('rutDestinatario', '==', rutNormalizado),
+            limit(50)
+          );
+          
+          unsubscribeAlertas1 = onSnapshot(
+            query1,
+            (snapshot) => {
+              console.log('✓ Listener 1 (rutDestinatario normalizado):', snapshot.docs.length, 'alertas');
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as any;
+                const fecha = data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha ? new Date(data.fecha) : null;
+                todasLasAlertasUnicas.set(docSnap.id, {
+                  id: docSnap.id,
+                  descripcion: data.descripcion || 'Sin descripcion',
+                  idPostulacion: data.parametros?.idPostulacion || data.idPostulacion || null,
+                  rutaDestino: data.rutaDestino || '/chat-validacion',
+                  parametros: data.parametros || {},
+                  fecha,
+                  patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+                  rutDestinatario: data.rutDestinatario,
+                  rutDestinatarioOriginal: data.rutDestinatarioOriginal,
+                });
+              });
+              procesarYActualizarAlertas();
+            },
+            (error) => console.warn('⚠ Error en listener 1:', error)
+          );
+        } catch (error1) {
+          console.warn('⚠ No se pudo crear listener 1 (rutDestinatario normalizado):', error1);
+        }
+
+        // Listener 2: Buscar con RUT original en rutDestinatarioOriginal
+        try {
+          const query2 = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'Postulacion'),
+            where('rutDestinatarioOriginal', '==', rutGuardado),
+            limit(50)
+          );
+          
+          unsubscribeAlertas2 = onSnapshot(
+            query2,
+            (snapshot) => {
+              console.log('✓ Listener 2 (rutDestinatarioOriginal):', snapshot.docs.length, 'alertas');
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as any;
+                const fecha = data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha ? new Date(data.fecha) : null;
+                todasLasAlertasUnicas.set(docSnap.id, {
+                  id: docSnap.id,
+                  descripcion: data.descripcion || 'Sin descripcion',
+                  idPostulacion: data.parametros?.idPostulacion || data.idPostulacion || null,
+                  rutaDestino: data.rutaDestino || '/chat-validacion',
+                  parametros: data.parametros || {},
+                  fecha,
+                  patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+                  rutDestinatario: data.rutDestinatario,
+                  rutDestinatarioOriginal: data.rutDestinatarioOriginal,
+                });
+              });
+              procesarYActualizarAlertas();
+            },
+            (error) => console.warn('⚠ Error en listener 2:', error)
+          );
+        } catch (error2) {
+          console.warn('⚠ No se pudo crear listener 2 (rutDestinatarioOriginal):', error2);
+        }
+
+        // Listener 3: Buscar con RUT original en rutDestinatario (compatibilidad con alertas antiguas)
+        try {
+          const query3 = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'Postulacion'),
+            where('rutDestinatario', '==', rutGuardado),
+            limit(50)
+          );
+          
+          unsubscribeAlertas3 = onSnapshot(
+            query3,
+            (snapshot) => {
+              console.log('✓ Listener 3 (rutDestinatario original):', snapshot.docs.length, 'alertas');
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as any;
+                const fecha = data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha ? new Date(data.fecha) : null;
+                todasLasAlertasUnicas.set(docSnap.id, {
+                  id: docSnap.id,
+                  descripcion: data.descripcion || 'Sin descripcion',
+                  idPostulacion: data.parametros?.idPostulacion || data.idPostulacion || null,
+                  rutaDestino: data.rutaDestino || '/chat-validacion',
+                  parametros: data.parametros || {},
+                  fecha,
+                  patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+                  rutDestinatario: data.rutDestinatario,
+                  rutDestinatarioOriginal: data.rutDestinatarioOriginal,
+                });
+              });
+              procesarYActualizarAlertas();
+            },
+            (error) => console.warn('⚠ Error en listener 3:', error)
+          );
+        } catch (error3) {
+          console.warn('⚠ No se pudo crear listener 3 (rutDestinatario original):', error3);
+        }
       } catch (error) {
         console.error('Error al cargar datos:', error);
         Alert.alert('Error', 'No se pudieron cargar los datos.');
@@ -244,10 +327,16 @@ export default function PaginaPrincipalConductor() {
 
     cargarDatos();
 
-    // Limpiar listener al desmontar
+    // Limpiar listeners al desmontar
     return () => {
-      if (unsubscribeAlertas) {
-        unsubscribeAlertas();
+      if (unsubscribeAlertas1) {
+        unsubscribeAlertas1();
+      }
+      if (unsubscribeAlertas2) {
+        unsubscribeAlertas2();
+      }
+      if (unsubscribeAlertas3) {
+        unsubscribeAlertas3();
       }
     };
   }, []);

@@ -1,11 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, TextInput, TouchableHighlight, View, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
-import CryptoJS from 'crypto-js';
-import { collection, getDocs, query, where, limit, doc, deleteDoc, getDoc } from 'firebase/firestore';
-import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import CryptoJS from 'crypto-js';
+import { Image } from 'expo-image';
+import { useRouter } from 'expo-router';
+import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, updateDoc, where } from 'firebase/firestore';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, TouchableHighlight, View } from 'react-native';
 
 import { db } from '@/firebaseConfig';
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
@@ -43,6 +43,14 @@ export default function ListaFurgonesScreen() {
   const [inscripcionActual, setInscripcionActual] = useState<InscripcionActual | null>(null);
   const [cargandoInscripcion, setCargandoInscripcion] = useState(true);
   const [dandoseDeBaja, setDandoseDeBaja] = useState(false);
+  
+  // Estados para modal personalizado
+  const [modalVisible, setModalVisible] = useState(false);
+  const [modalTipo, setModalTipo] = useState<'confirmacion' | 'advertencia' | 'exito' | 'error'>('confirmacion');
+  const [modalTitulo, setModalTitulo] = useState('');
+  const [modalMensaje, setModalMensaje] = useState('');
+  const modalCallbackRef = useRef<(() => void) | null>(null);
+  const isConfirmingRef = useRef(false);
 
   useEffect(() => {
     const cargarInscripcionActual = async () => {
@@ -204,35 +212,83 @@ export default function ListaFurgonesScreen() {
     }
   };
 
+  const mostrarModal = (
+    tipo: 'confirmacion' | 'advertencia' | 'exito' | 'error',
+    titulo: string,
+    mensaje: string,
+    onConfirm?: () => void
+  ) => {
+    modalCallbackRef.current = onConfirm || null;
+    isConfirmingRef.current = false;
+    
+    if (modalVisible) {
+      setModalVisible(false);
+      setTimeout(() => {
+        setModalTipo(tipo);
+        setModalTitulo(titulo);
+        setModalMensaje(mensaje);
+        setModalVisible(true);
+      }, 150);
+    } else {
+      setModalTipo(tipo);
+      setModalTitulo(titulo);
+      setModalMensaje(mensaje);
+      setModalVisible(true);
+    }
+  };
+
+  const cerrarModal = () => {
+    setModalVisible(false);
+    modalCallbackRef.current = null;
+    isConfirmingRef.current = false;
+  };
+
+  const confirmarModal = async () => {
+    if (isConfirmingRef.current) {
+      return;
+    }
+    
+    isConfirmingRef.current = true;
+    const callback = modalCallbackRef.current;
+    
+    if (!callback) {
+      isConfirmingRef.current = false;
+      cerrarModal();
+      return;
+    }
+    
+    setModalVisible(false);
+    modalCallbackRef.current = null;
+    
+    setTimeout(async () => {
+      try {
+        await callback();
+      } catch (error) {
+        console.error('Error al ejecutar callback del modal:', error);
+      } finally {
+        isConfirmingRef.current = false;
+      }
+    }, 200);
+  };
+
   const handleDarseDeBaja = async () => {
     if (!inscripcionActual) return;
 
     const mensajeConfirmacion = `¿Estás seguro de que deseas darte de baja del furgón "${inscripcionActual.nombreFurgon}"?\n\nPatente: ${inscripcionActual.patenteFurgon}\nHijo: ${inscripcionActual.nombreHijo}\n\nEsta acción eliminará tu inscripción y no se puede deshacer.`;
 
-    const confirmar = Platform.OS === 'web' 
-      ? window.confirm(mensajeConfirmacion)
-      : await new Promise<boolean>((resolve) => {
-          Alert.alert(
-            'Confirmar darse de baja',
-            mensajeConfirmacion,
-            [
-              {
-                text: 'Cancelar',
-                style: 'cancel',
-                onPress: () => resolve(false),
-              },
-              {
-                text: 'Darse de baja',
-                style: 'destructive',
-                onPress: () => resolve(true),
-              },
-            ]
-          );
-        });
+    // Usar modal personalizado en lugar de Alert
+    mostrarModal(
+      'confirmacion',
+      'Confirmar darse de baja',
+      mensajeConfirmacion,
+      async () => {
+        await procesarBaja();
+      }
+    );
+  };
 
-    if (!confirmar) {
-      return;
-    }
+  const procesarBaja = async () => {
+    if (!inscripcionActual) return;
 
     try {
       setDandoseDeBaja(true);
@@ -259,12 +315,14 @@ export default function ListaFurgonesScreen() {
       const inscripcionDoc = await getDoc(inscripcionRef);
       if (!inscripcionDoc.exists()) {
         console.warn('El documento de inscripción no existe, puede que ya haya sido eliminado');
-        if (Platform.OS === 'web') {
-          window.alert('La inscripción ya no existe en el sistema.');
-        } else {
-          Alert.alert('Advertencia', 'La inscripción ya no existe en el sistema.');
-        }
-        setInscripcionActual(null);
+        mostrarModal(
+          'advertencia',
+          'Advertencia',
+          'La inscripción ya no existe en el sistema.',
+          () => {
+            setInscripcionActual(null);
+          }
+        );
         return;
       }
       
@@ -273,30 +331,107 @@ export default function ListaFurgonesScreen() {
       console.log('✓ Documento eliminado exitosamente de lista_pasajeros');
       console.log('✓ El niño será eliminado automáticamente de la lista del conductor');
 
+      // Buscar y eliminar TODOS los registros relacionados con este hijo y apoderado
+      // por si hay duplicados o registros antiguos
+      try {
+        const rutApoderado = await AsyncStorage.getItem('rutUsuario');
+        if (rutApoderado) {
+          const listaPasajerosRef = collection(db, 'lista_pasajeros');
+          const todasLasInscripcionesQuery = query(
+            listaPasajerosRef,
+            where('rutHijo', '==', rutHijo),
+            where('rutApoderado', '==', rutApoderado)
+          );
+          const todasLasInscripcionesSnap = await getDocs(todasLasInscripcionesQuery);
+          
+          if (!todasLasInscripcionesSnap.empty) {
+            console.log(`Encontrados ${todasLasInscripcionesSnap.docs.length} registro(s) adicional(es) para eliminar`);
+            await Promise.all(
+              todasLasInscripcionesSnap.docs.map(async (docSnap) => {
+                if (docSnap.id !== inscripcionId) {
+                  await deleteDoc(docSnap.ref);
+                  console.log(`✓ Registro adicional eliminado: ${docSnap.id}`);
+                }
+              })
+            );
+          }
+        }
+      } catch (errorEliminacionAdicional) {
+        console.error('Error al eliminar registros adicionales:', errorEliminacionAdicional);
+        // No bloquear el proceso si falla la eliminación adicional
+      }
+
+      // Actualizar TODAS las postulaciones relacionadas (aceptadas, pendientes, etc.) para permitir nuevas postulaciones
+      try {
+        const rutApoderado = await AsyncStorage.getItem('rutUsuario');
+        if (rutApoderado) {
+          const postulacionesRef = collection(db, 'Postulaciones');
+          
+          // Buscar todas las postulaciones relacionadas con este hijo y apoderado (sin filtrar por estado)
+          const todasLasPostulacionesQuery = query(
+            postulacionesRef,
+            where('rutHijo', '==', rutHijo),
+            where('rutUsuario', '==', rutApoderado)
+          );
+          const todasLasPostulacionesSnap = await getDocs(todasLasPostulacionesQuery);
+          
+          if (!todasLasPostulacionesSnap.empty) {
+            console.log(`Encontradas ${todasLasPostulacionesSnap.docs.length} postulación(es) relacionada(s) para actualizar`);
+            
+            // Actualizar TODAS las postulaciones a estado 'baja' para permitir nuevas postulaciones
+            await Promise.all(
+              todasLasPostulacionesSnap.docs.map(async (postulacionDoc) => {
+                const data = postulacionDoc.data();
+                const estadoActual = (data.estado || '').toString().toLowerCase();
+                
+                // Solo actualizar si no está ya en estado 'baja' o 'cancelada'
+                if (estadoActual !== 'baja' && estadoActual !== 'cancelada') {
+                  await updateDoc(postulacionDoc.ref, {
+                    estado: 'baja',
+                    fechaBaja: new Date().toISOString(),
+                  });
+                  console.log(`✓ Postulación ${postulacionDoc.id} (estado anterior: ${estadoActual}) actualizada a estado 'baja'`);
+                } else {
+                  console.log(`✓ Postulación ${postulacionDoc.id} ya estaba en estado '${estadoActual}', no se actualiza`);
+                }
+              })
+            );
+            console.log('✓ Todas las postulaciones relacionadas han sido actualizadas');
+          } else {
+            console.log('No se encontraron postulaciones relacionadas para actualizar');
+          }
+        }
+      } catch (errorPostulaciones) {
+        console.error('Error al actualizar postulaciones:', errorPostulaciones);
+        // No bloquear el proceso si falla la actualización de postulaciones
+        // El usuario ya se dio de baja exitosamente
+      }
+
       // Actualizar el estado local
       setInscripcionActual(null);
 
       const mensajeExito = `Te has dado de baja exitosamente del furgón "${nombreFurgonEliminado}".`;
       
-      if (Platform.OS === 'web') {
-        window.alert(mensajeExito);
-      } else {
-        Alert.alert('Éxito', mensajeExito);
-      }
-
-      // Redirigir a la página principal para que muestre la vista inicial
-      setTimeout(() => {
-        router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-      }, 500);
+      // Mostrar modal de éxito
+      mostrarModal(
+        'exito',
+        'Éxito',
+        mensajeExito,
+        () => {
+          // Redirigir a la página principal después de cerrar el modal
+          router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
+        }
+      );
     } catch (error) {
       console.error('Error al darse de baja:', error);
       const mensajeError = 'No se pudo completar la baja. Por favor, intenta nuevamente.';
       
-      if (Platform.OS === 'web') {
-        window.alert(`Error: ${mensajeError}`);
-      } else {
-        Alert.alert('Error', mensajeError);
-      }
+      // Mostrar modal de error
+      mostrarModal(
+        'error',
+        'Error',
+        mensajeError
+      );
     } finally {
       setDandoseDeBaja(false);
     }
@@ -391,6 +526,89 @@ export default function ListaFurgonesScreen() {
           contentContainerStyle={styles.listContent}
         />
       )}
+
+      {/* Modal personalizado */}
+      <Modal
+        visible={modalVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={cerrarModal}
+      >
+        <Pressable 
+          style={styles.modalOverlay}
+          onPress={(e) => {
+            e.stopPropagation();
+            cerrarModal();
+          }}
+        >
+          <Pressable 
+            style={styles.modalCard}
+            onPress={(e) => {
+              e.stopPropagation();
+            }}
+          >
+            {modalTipo === 'confirmacion' && (
+              <Ionicons name="help-circle" size={48} color="#127067" style={styles.modalIcon} />
+            )}
+            {modalTipo === 'advertencia' && (
+              <Ionicons name="warning" size={48} color="#f39c12" style={styles.modalIcon} />
+            )}
+            {modalTipo === 'exito' && (
+              <Ionicons name="checkmark-circle" size={48} color="#127067" style={styles.modalIcon} />
+            )}
+            {modalTipo === 'error' && (
+              <Ionicons name="close-circle" size={48} color="#d32f2f" style={styles.modalIcon} />
+            )}
+            
+            <Text style={styles.modalTitle}>{modalTitulo}</Text>
+            <Text style={styles.modalMessage}>{modalMensaje}</Text>
+            
+            <View style={styles.modalButtonsContainer}>
+              {(modalTipo === 'confirmacion' || modalTipo === 'advertencia') && (
+                <>
+                  <TouchableHighlight
+                    style={styles.modalButtonCancel}
+                    underlayColor="#e0e0e0"
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      cerrarModal();
+                    }}
+                  >
+                    <Text style={styles.modalButtonCancelText}>Cancelar</Text>
+                  </TouchableHighlight>
+                  <TouchableHighlight
+                    style={styles.modalButtonConfirm}
+                    underlayColor={modalTipo === 'advertencia' ? '#b71c1c' : '#0e5b52'}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      confirmarModal();
+                    }}
+                  >
+                    <Text style={styles.modalButtonConfirmText}>
+                      {modalTipo === 'advertencia' ? 'Darse de baja de todas formas' : 'Darse de baja'}
+                    </Text>
+                  </TouchableHighlight>
+                </>
+              )}
+              {(modalTipo === 'exito' || modalTipo === 'error') && (
+                <TouchableHighlight
+                  style={styles.modalButtonOK}
+                  underlayColor={modalTipo === 'error' ? '#b71c1c' : '#0e5b52'}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    if (modalTipo === 'exito' && modalCallbackRef.current) {
+                      modalCallbackRef.current();
+                    }
+                    cerrarModal();
+                  }}
+                >
+                  <Text style={styles.modalButtonOKText}>Entendido</Text>
+                </TouchableHighlight>
+              )}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -550,5 +768,91 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: '#00000066',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    alignItems: 'center',
+    elevation: 12,
+    ...makeShadow(
+      '0 12px 24px rgba(0,0,0,0.2)',
+      {
+        shadowColor: '#000',
+        shadowOpacity: 0.2,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 6 },
+      },
+    ),
+  },
+  modalIcon: {
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    fontSize: 16,
+    color: '#555',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 22,
+  },
+  modalButtonsContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+  },
+  modalButtonCancel: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  modalButtonCancelText: {
+    color: '#333',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  modalButtonConfirm: {
+    flex: 1,
+    backgroundColor: '#127067',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  modalButtonConfirmText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  modalButtonOK: {
+    width: '100%',
+    backgroundColor: '#127067',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  modalButtonOKText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '500',
   },
 });
