@@ -296,21 +296,30 @@ export default function RegisterScreen() {
       return;
     }
 
+    // Normalizar el RUT para guardarlo de forma consistente (sin espacios)
+    const rutNormalizado = rut.trim();
+
     const usuario = {
       nombres,
       apellidos,
       correo,
       telefono,
       contrasena,
-      rut,
+      rut: rutNormalizado, // Guardar RUT sin espacios para consistencia
       rol: esConductor ? 'Conductor' : 'Apoderado',
     };
 
     try {
       await addDoc(collection(db, 'usuarios'), usuario);
+      console.log('✅ Usuario registrado exitosamente:', {
+        nombres,
+        rut: rutNormalizado,
+        rol: usuario.rol,
+      });
       Alert.alert('¡Registro exitoso!', `Bienvenido, ${nombres}`);
       router.push('/(tabs)/login');
-    } catch {
+    } catch (error) {
+      console.error('Error al registrar usuario:', error);
       Alert.alert('Error', 'No se pudo guardar el usuario en la nube. Intenta de nuevo.');
     }
   };
@@ -393,12 +402,13 @@ export default function RegisterScreen() {
       {errores.rut ? <Text style={styles.errorText}>{errores.rut}</Text> : null}
 
       <View style={styles.switchContainer}>
-        <Text>Conductor de furgón</Text>
+        <Text style={styles.switchLabel}>Conductor de furgón</Text>
         <Switch
           value={esConductor}
           onValueChange={setEsConductor}
           thumbColor={esConductor ? '#127067' : '#ccc'}
           trackColor={{ false: '#ccc', true: '#85d7c0' }}
+          style={styles.switch}
         />
       </View>
 
@@ -460,7 +470,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginVertical: 10,
-    gap: 10,
+    justifyContent: 'space-between',
+    width: '90%',
+  },
+  switchLabel: {
+    marginRight: 10,
+  },
+  switch: {
+    marginLeft: 10,
   },
   checkboxContainer: {
     flexDirection: 'row',

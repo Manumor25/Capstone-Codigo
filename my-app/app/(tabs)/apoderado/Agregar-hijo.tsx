@@ -384,14 +384,22 @@ export default function AddChildScreen() {
     try {
       setLoading(true);
 
+      // Normalizar el rutUsuario para guardarlo de forma consistente (sin espacios)
+      const rutUsuarioNormalizado = rutUsuario ? rutUsuario.trim() : '';
+
       const payload: DatosHijoDraft = {
         nombres,
         apellidos,
         rut,
         fechaNacimiento,
         edad,
-        rutUsuario,
+        rutUsuario: rutUsuarioNormalizado, // Guardar RUT sin espacios para consistencia
       };
+
+      console.log('✅ Guardando borrador de hijo con rutUsuario normalizado:', {
+        rutHijo: rut,
+        rutUsuario: rutUsuarioNormalizado,
+      });
 
       await AsyncStorage.setItem('nuevoHijoData', JSON.stringify(payload));
 

@@ -68,18 +68,51 @@ export default function PostularFurgon() {
         }
         setRutUsuario(rutGuardado);
 
+        // Normalizar el RUT del usuario para comparación
+        const rutUsuarioNormalizado = normalizarRut(rutGuardado);
+        const rutUsuarioTrim = rutGuardado.trim();
+
         const hijosRef = collection(db, 'Hijos');
-        const q = query(hijosRef, where('rutUsuario', '==', rutGuardado));
+        // Buscar hijos con el RUT exacto (con formato) o normalizado
+        const q = query(hijosRef, where('rutUsuario', '==', rutUsuarioTrim));
         const snapshot = await getDocs(q);
 
-        const lista = snapshot.docs.map((docSnap) => {
-          const data = docSnap.data();
-          return {
-            id: docSnap.id,
-            nombres: data.nombres || '',
-            apellidos: data.apellidos || '',
-            rut: data.rut || '',
-          };
+        // Filtrar hijos que realmente pertenecen al usuario actual
+        // Comparar tanto el RUT original como el normalizado
+        const lista = snapshot.docs
+          .map((docSnap) => {
+            const data = docSnap.data();
+            return {
+              id: docSnap.id,
+              nombres: data.nombres || '',
+              apellidos: data.apellidos || '',
+              rut: data.rut || '',
+              rutUsuario: data.rutUsuario || '',
+            };
+          })
+          .filter((hijo) => {
+            // Verificar que el hijo pertenece al usuario actual
+            const rutUsuarioHijo = (hijo.rutUsuario || '').toString().trim();
+            const rutUsuarioHijoNormalizado = normalizarRut(rutUsuarioHijo);
+            
+            // Comparar tanto el RUT original como el normalizado
+            return (
+              rutUsuarioHijo === rutUsuarioTrim ||
+              rutUsuarioHijoNormalizado === rutUsuarioNormalizado
+            );
+          })
+          .map((hijo) => ({
+            id: hijo.id,
+            nombres: hijo.nombres,
+            apellidos: hijo.apellidos,
+            rut: hijo.rut,
+          }));
+
+        console.log('Hijos cargados para usuario:', {
+          rutUsuario: rutUsuarioTrim,
+          rutUsuarioNormalizado,
+          totalHijosEnDB: snapshot.docs.length,
+          hijosFiltrados: lista.length,
         });
 
         setHijos(lista);
@@ -409,20 +442,45 @@ export default function PostularFurgon() {
         rutUsuario,
       });
       
+      // Solo bloquear si hay coincidencias activas Y pertenecen al mismo apoderado
       if (coincidenciasLista.length > 0) {
-        const detallePatentes = Array.from(patentesRegistradas).join(', ');
-        const mensajeExtra = detallePatentes.length > 0 ? ` Actualmente figura en: ${detallePatentes}.` : '';
-        console.log('⚠️ Bloqueando postulación: Hijo ya inscrito activamente en lista_pasajeros');
-        console.log('Detalles de coincidencias:', coincidenciasLista.map(c => ({
-          id: c.id,
-          estado: c.data()?.estado,
-          fechaBaja: c.data()?.fechaBaja,
-          patente: c.data()?.patenteFurgon,
-        })));
-        mostrarBloqueo(
-          `Este hijo ya esta inscrito en un furgon.${mensajeExtra} Comunicate con el tio del furgon para salirse antes de intentar una nueva postulacion.`,
-        );
-        return;
+        // Verificar que todas las coincidencias pertenecen al mismo apoderado
+        const rutUsuarioNormalizado = normalizarRut(rutUsuario);
+        const coincidenciasValidas = coincidenciasLista.filter((docSnap) => {
+          const data = docSnap.data() || {};
+          const rutApoderadoDoc = (data.rutApoderado || '').toString().trim();
+          const rutApoderadoNormalizado = normalizarRut(rutApoderadoDoc);
+          
+          // Verificar que el RUT del apoderado coincide (original o normalizado)
+          return (
+            rutApoderadoDoc === rutUsuario ||
+            rutApoderadoNormalizado === rutUsuarioNormalizado
+          );
+        });
+        
+        console.log('Coincidencias válidas (mismo apoderado):', {
+          total: coincidenciasLista.length,
+          validas: coincidenciasValidas.length,
+        });
+        
+        if (coincidenciasValidas.length > 0) {
+          const detallePatentes = Array.from(patentesRegistradas).join(', ');
+          const mensajeExtra = detallePatentes.length > 0 ? ` Actualmente figura en: ${detallePatentes}.` : '';
+          console.log('⚠️ Bloqueando postulación: Hijo ya inscrito activamente en lista_pasajeros');
+          console.log('Detalles de coincidencias válidas:', coincidenciasValidas.map(c => ({
+            id: c.id,
+            estado: c.data()?.estado,
+            fechaBaja: c.data()?.fechaBaja,
+            patente: c.data()?.patenteFurgon,
+            rutApoderado: c.data()?.rutApoderado,
+          })));
+          mostrarBloqueo(
+            `Este hijo ya esta inscrito en un furgon.${mensajeExtra} Comunicate con el tio del furgon para salirse antes de intentar una nueva postulacion.`,
+          );
+          return;
+        } else {
+          console.log('⚠️ Coincidencias encontradas pero no pertenecen al mismo apoderado, permitiendo postulación');
+        }
       }
       
       console.log('No hay inscripciones activas, permitiendo postulación');

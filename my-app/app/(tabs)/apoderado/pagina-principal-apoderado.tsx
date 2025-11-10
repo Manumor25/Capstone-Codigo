@@ -64,15 +64,30 @@ export default function PaginaPrincipal() {
   const [ultimaRevisionAlertas, setUltimaRevisionAlertas] = useState<number | null>(null);
   const [tieneInscripcion, setTieneInscripcion] = useState<boolean>(false);
   const [cargandoInscripcion, setCargandoInscripcion] = useState<boolean>(true);
+  const [alertasBorradas, setAlertasBorradas] = useState<string[]>([]);
   useSyncRutActivo();
 
   useEffect(() => {
     const cargarDatos = async () => {
       try {
-        const [rutGuardado, rutHijoPrevio] = await Promise.all([
+        const [rutGuardado, rutHijoPrevio, alertasBorradasGuardadas] = await Promise.all([
           AsyncStorage.getItem('rutUsuario'),
           AsyncStorage.getItem('rutHijoSeleccionado'),
+          AsyncStorage.getItem('alertasBorradas'),
         ]);
+        
+        // Cargar alertas borradas desde AsyncStorage
+        if (alertasBorradasGuardadas) {
+          try {
+            const idsBorrados = JSON.parse(alertasBorradasGuardadas);
+            if (Array.isArray(idsBorrados)) {
+              setAlertasBorradas(idsBorrados);
+            }
+          } catch (error) {
+            console.error('Error al cargar alertas borradas:', error);
+          }
+        }
+        
         if (!rutGuardado) {
           Alert.alert('Error', 'No se encontró el RUT del usuario activo.');
           setLoadingHijos(false);
@@ -80,23 +95,59 @@ export default function PaginaPrincipal() {
         }
         setRutUsuario(rutGuardado);
 
+        // Normalizar el RUT del usuario para comparación
+        const rutUsuarioNormalizado = normalizarRut(rutGuardado);
+        const rutUsuarioTrim = rutGuardado.trim();
+
         const hijosRef = collection(db, 'Hijos');
-        const q = query(hijosRef, where('rutUsuario', '==', rutGuardado));
+        const q = query(hijosRef, where('rutUsuario', '==', rutUsuarioTrim));
         const querySnapshot = await getDocs(q);
 
         if (!querySnapshot.empty) {
-          const listaHijos: Hijo[] = querySnapshot.docs.map((doc) => {
-            const data = doc.data() || {};
-            return {
-              id: doc.id,
-              nombres: data.nombres || 'Sin nombre',
-              apellidos: data.apellidos || 'Sin apellido',
-              rut: data.rut || 'Sin RUT',
-              edad: data.edad !== undefined ? data.edad : '-',
-              fechaNacimiento: data.fechaNacimiento || 'No disponible',
-              horarioAsistencia: Array.isArray(data.horarioAsistencia) ? data.horarioAsistencia : [],
-            };
+          // Filtrar hijos que realmente pertenecen al usuario actual
+          // Comparar tanto el RUT original como el normalizado
+          const listaHijos: Hijo[] = querySnapshot.docs
+            .map((doc) => {
+              const data = doc.data() || {};
+              return {
+                id: doc.id,
+                nombres: data.nombres || 'Sin nombre',
+                apellidos: data.apellidos || 'Sin apellido',
+                rut: data.rut || 'Sin RUT',
+                edad: data.edad !== undefined ? data.edad : '-',
+                fechaNacimiento: data.fechaNacimiento || 'No disponible',
+                horarioAsistencia: Array.isArray(data.horarioAsistencia) ? data.horarioAsistencia : [],
+                rutUsuario: data.rutUsuario || '',
+              };
+            })
+            .filter((hijo: any) => {
+              // Verificar que el hijo pertenece al usuario actual
+              const rutUsuarioHijo = (hijo.rutUsuario || '').toString().trim();
+              const rutUsuarioHijoNormalizado = normalizarRut(rutUsuarioHijo);
+              
+              // Comparar tanto el RUT original como el normalizado
+              return (
+                rutUsuarioHijo === rutUsuarioTrim ||
+                rutUsuarioHijoNormalizado === rutUsuarioNormalizado
+              );
+            })
+            .map((hijo: any) => ({
+              id: hijo.id,
+              nombres: hijo.nombres,
+              apellidos: hijo.apellidos,
+              rut: hijo.rut,
+              edad: hijo.edad,
+              fechaNacimiento: hijo.fechaNacimiento,
+              horarioAsistencia: hijo.horarioAsistencia,
+            }));
+          
+          console.log('Hijos cargados para usuario (página principal):', {
+            rutUsuario: rutUsuarioTrim,
+            rutUsuarioNormalizado,
+            totalHijosEnDB: querySnapshot.docs.length,
+            hijosFiltrados: listaHijos.length,
           });
+          
           setHijos(listaHijos);
           if (listaHijos.length > 0) {
             const hijoInicial = rutHijoPrevio
@@ -127,7 +178,7 @@ export default function PaginaPrincipal() {
           
           listaPasajerosSnap.forEach((docSnap) => {
             const data = docSnap.data() || {};
-            const patente = (data.patenteFurgon || '').toString().trim();
+            const patente = (data.patenteFurgon || '').toString().trim().toUpperCase();
             if (patente) {
               patentesSet.add(patente);
             }
@@ -150,6 +201,11 @@ export default function PaginaPrincipal() {
     cargarDatos();
   }, []);
 
+  // Función para normalizar RUT (eliminar puntos y guiones)
+  const normalizarRut = (rut: string): string => {
+    return rut.replace(/[^0-9kK]/g, '').toUpperCase();
+  };
+
   // Listener en tiempo real para alertas
   useEffect(() => {
     if (!rutUsuario) {
@@ -157,17 +213,25 @@ export default function PaginaPrincipal() {
       return;
     }
 
-    console.log('Iniciando listener de alertas para RUT:', rutUsuario);
+    // Normalizar RUT para búsqueda consistente
+    const rutNormalizado = rutUsuario.trim();
+    const rutSinFormato = normalizarRut(rutUsuario);
+    
+    console.log('=== INICIANDO LISTENER DE ALERTAS ===');
+    console.log('RUT usuario (original):', rutUsuario);
+    console.log('RUT usuario (normalizado/trim):', rutNormalizado);
+    console.log('RUT usuario (sin formato):', rutSinFormato);
     console.log('Patentes asignadas:', patentesAsignadas);
 
     const alertasRef = collection(db, 'Alertas');
     let alertasQuery;
     
     // Intentar crear query con orderBy, si falla usar query simple
+    // Buscar con el RUT tal como está guardado (con formato)
     try {
       alertasQuery = query(
         alertasRef,
-        where('rutDestinatario', '==', rutUsuario),
+        where('rutDestinatario', '==', rutNormalizado),
         orderBy('creadoEn', 'desc'),
         limit(50),
       );
@@ -176,85 +240,164 @@ export default function PaginaPrincipal() {
       // Si falla orderBy, puede ser porque no hay índice, usar query sin orderBy
       alertasQuery = query(
         alertasRef,
-        where('rutDestinatario', '==', rutUsuario),
+        where('rutDestinatario', '==', rutNormalizado),
         limit(50),
       );
     }
+    
+    // También crear un listener alternativo sin orderBy para capturar más alertas
+    let alertasQueryAlternativo;
+    try {
+      alertasQueryAlternativo = query(
+        alertasRef,
+        where('rutDestinatario', '==', rutNormalizado),
+        limit(50),
+      );
+    } catch (errorAlt) {
+      console.warn('No se pudo crear query alternativo:', errorAlt);
+    }
 
-    const patentesSet = new Set(patentesAsignadas);
+    // Función para procesar alertas
+    const procesarAlertas = (snapshot: any, fuente: string) => {
+      console.log(`=== SNAPSHOT RECIBIDO (${fuente}) ===`);
+      console.log('Total alertas en snapshot:', snapshot.docs.length);
+      
+      // Obtener patentes actualizadas dentro del callback para evitar problemas de closure
+      const patentesActuales = [...patentesAsignadas];
+      const patentesSet = new Set(patentesActuales);
+      const rutUsuarioNormalizado = normalizarRut(rutUsuario);
+      
+      if (snapshot.empty) {
+        console.log(`⚠ No hay alertas en la base de datos para este RUT (${fuente})`);
+        console.log('RUT buscado:', rutNormalizado);
+        console.log('RUT normalizado (sin formato):', rutUsuarioNormalizado);
+        return [];
+      }
+        
+      const alertasMap = new Map<string, Alerta>();
+      
+      snapshot.docs.forEach((docSnap: any) => {
+        const data = docSnap.data() || {};
+        const fecha =
+          data.creadoEn && typeof data.creadoEn.toDate === 'function'
+            ? data.creadoEn.toDate()
+            : data.fecha
+            ? new Date(data.fecha)
+            : null;
+        
+        const rutDestinatarioAlerta = (data.rutDestinatario || '').toString().trim();
+        const rutDestinatarioNormalizado = normalizarRut(rutDestinatarioAlerta);
+        
+        // Verificar si el RUT coincide (con formato o sin formato)
+        const rutCoincide = 
+          rutDestinatarioAlerta === rutNormalizado || 
+          rutDestinatarioNormalizado === rutUsuarioNormalizado ||
+          rutDestinatarioAlerta === rutUsuario ||
+          rutDestinatarioAlerta.trim() === rutUsuario.trim();
+        
+        console.log('🔍 Alerta encontrada:', {
+          id: docSnap.id,
+          rutDestinatarioEnAlerta: rutDestinatarioAlerta,
+          rutDestinatarioNormalizado,
+          rutUsuarioBuscado: rutNormalizado,
+          rutUsuarioNormalizado,
+          coincide: rutCoincide,
+          patenteFurgon: data.patenteFurgon,
+          tipoAlerta: data.tipoAlerta,
+          descripcion: data.descripcion?.substring(0, 30),
+        });
+        
+        // Solo incluir si el RUT coincide
+        if (rutCoincide) {
+          const alerta: Alerta = {
+            id: docSnap.id,
+            tipo: data.tipoAlerta || 'Alerta',
+            descripcion: data.descripcion || 'Sin descripcion',
+            rutaDestino: data.rutaDestino,
+            parametros: data.parametros,
+            patenteFurgon: (data.patenteFurgon || '').toString().trim().toUpperCase(),
+            fecha,
+          };
+          
+          // Usar Map para evitar duplicados
+          if (!alertasMap.has(docSnap.id)) {
+            alertasMap.set(docSnap.id, alerta);
+          }
+        }
+      });
+      
+      const todasLasAlertas = Array.from(alertasMap.values());
+
+      console.log('✓ Todas las alertas recibidas (después de filtro por RUT):', todasLasAlertas.length);
+      console.log('✓ Patentes en las alertas:', todasLasAlertas.map(a => a.patenteFurgon).filter(Boolean));
+      console.log('✓ Patentes asignadas al usuario:', Array.from(patentesSet));
+
+      // Filtrar alertas por patentes asignadas
+      let listaAlertas: Alerta[] = [];
+        
+      // Filtrar por patentes asignadas (si hay patentes)
+      if (patentesActuales.length === 0) {
+        console.log('⚠ No hay patentes asignadas aún, mostrando todas las alertas temporalmente');
+        listaAlertas = todasLasAlertas;
+      } else {
+        // Normalizar patentes para comparación (mayúsculas y sin espacios)
+        const patentesNormalizadas = patentesActuales.map(p => p.trim().toUpperCase());
+        const patentesSetNormalizado = new Set(patentesNormalizadas);
+        
+        console.log('Filtrando por patentes:', {
+          patentesAsignadas: patentesNormalizadas,
+          totalAlertasAntes: todasLasAlertas.length,
+        });
+        
+        listaAlertas = todasLasAlertas.filter((alerta) => {
+          // Si la alerta no tiene patente, no la filtramos (puede ser una alerta general)
+          if (!alerta.patenteFurgon) {
+            console.log('⚠ Alerta sin patenteFurgon (puede ser general):', alerta.id);
+            // Permitir alertas sin patente (pueden ser alertas generales)
+            return true;
+          }
+          // Normalizar patente de la alerta para comparación
+          const patenteAlertaNormalizada = alerta.patenteFurgon.trim().toUpperCase();
+          const tienePatente = patentesSetNormalizado.has(patenteAlertaNormalizada);
+          if (!tienePatente) {
+            console.log('✗ Alerta filtrada por patente:', patenteAlertaNormalizada, 'no está en', Array.from(patentesSetNormalizado));
+          } else {
+            console.log('✓ Alerta incluida - patente coincide:', patenteAlertaNormalizada);
+          }
+          return tienePatente;
+        });
+      }
+
+      const alertasOrdenadas = listaAlertas
+        .sort((a, b) => {
+          const fechaA = a.fecha ? a.fecha.getTime() : 0;
+          const fechaB = b.fecha ? b.fecha.getTime() : 0;
+          return fechaB - fechaA;
+        })
+        .slice(0, 10);
+      
+      console.log('=== RESULTADO FINAL ===');
+      console.log('✓ Alertas finales después de filtrado:', alertasOrdenadas.length);
+      if (alertasOrdenadas.length > 0) {
+        console.log('✓ Alertas mostradas:', alertasOrdenadas.map(a => ({ 
+          tipo: a.tipo, 
+          descripcion: a.descripcion.substring(0, 30), 
+          patente: a.patenteFurgon,
+          fecha: a.fecha?.toISOString(),
+        })));
+      } else {
+        console.log('⚠ No hay alertas para mostrar');
+      }
+      
+      return alertasOrdenadas;
+    };
 
     // Usar onSnapshot para actualización en tiempo real
     const unsubscribeAlertas = onSnapshot(
       alertasQuery,
       (snapshot) => {
-        console.log('✓ Snapshot recibido con', snapshot.docs.length, 'alertas');
-        
-        if (snapshot.empty) {
-          console.log('No hay alertas en la base de datos para este RUT');
-          setAlertas([]);
-          return;
-        }
-        
-        const todasLasAlertas: Alerta[] = snapshot.docs
-          .map((docSnap) => {
-            const data = docSnap.data() || {};
-            const fecha =
-              data.creadoEn && typeof data.creadoEn.toDate === 'function'
-                ? data.creadoEn.toDate()
-                : data.fecha
-                ? new Date(data.fecha)
-                : null;
-            return {
-              id: docSnap.id,
-              tipo: data.tipoAlerta || 'Alerta',
-              descripcion: data.descripcion || 'Sin descripcion',
-              rutaDestino: data.rutaDestino,
-              parametros: data.parametros,
-              patenteFurgon: (data.patenteFurgon || '').toString().trim(),
-              fecha,
-            };
-          });
-
-        console.log('✓ Todas las alertas recibidas:', todasLasAlertas.length);
-        console.log('✓ Patentes en las alertas:', todasLasAlertas.map(a => a.patenteFurgon).filter(Boolean));
-        console.log('✓ Patentes asignadas al usuario:', Array.from(patentesSet));
-
-        // Filtrar alertas por patentes asignadas (si hay patentes)
-        // Si no hay patentes asignadas aún, mostrar todas las alertas temporalmente
-        let listaAlertas: Alerta[] = [];
-        
-        if (patentesAsignadas.length === 0) {
-          console.log('⚠ No hay patentes asignadas aún, mostrando todas las alertas temporalmente');
-          listaAlertas = todasLasAlertas;
-        } else {
-          listaAlertas = todasLasAlertas.filter((alerta) => {
-            // Si la alerta no tiene patente, no la filtramos (puede ser una alerta general)
-            if (!alerta.patenteFurgon) {
-              console.log('⚠ Alerta sin patenteFurgon (puede ser general):', alerta.id);
-              // Permitir alertas sin patente (pueden ser alertas generales)
-              return true;
-            }
-            const tienePatente = patentesSet.has(alerta.patenteFurgon);
-            if (!tienePatente) {
-              console.log('✗ Alerta filtrada por patente:', alerta.patenteFurgon, 'no está en', Array.from(patentesSet));
-            }
-            return tienePatente;
-          });
-        }
-
-        const alertasOrdenadas = listaAlertas
-          .sort((a, b) => {
-            const fechaA = a.fecha ? a.fecha.getTime() : 0;
-            const fechaB = b.fecha ? b.fecha.getTime() : 0;
-            return fechaB - fechaA;
-          })
-          .slice(0, 10);
-        
-        console.log('✓ Alertas finales después de filtrado:', alertasOrdenadas.length);
-        if (alertasOrdenadas.length > 0) {
-          console.log('✓ Alertas mostradas:', alertasOrdenadas.map(a => ({ tipo: a.tipo, descripcion: a.descripcion.substring(0, 30) })));
-        }
-        setAlertas(alertasOrdenadas);
+        const alertasFinales = procesarAlertas(snapshot, 'query principal');
+        setAlertas(alertasFinales);
       },
       (error) => {
         console.error('✗ Error en listener de alertas:', error);
@@ -266,10 +409,50 @@ export default function PaginaPrincipal() {
       }
     );
 
-    // Limpiar listener al desmontar o cambiar dependencias
+    // También crear un listener alternativo que busque todas las alertas y las filtre en el cliente
+    // Esto ayuda si hay problemas con el formato del RUT en la query
+    let unsubscribeAlternativo: (() => void) | null = null;
+    try {
+      const queryAlternativo = query(alertasRef, limit(100));
+      unsubscribeAlternativo = onSnapshot(
+        queryAlternativo,
+        (snapshot) => {
+          console.log('📡 Listener alternativo recibido:', snapshot.docs.length, 'alertas totales');
+          // Solo procesar si el listener principal no encontró nada
+          // Esto se maneja automáticamente porque ambos actualizan el mismo estado
+          const alertasFinales = procesarAlertas(snapshot, 'query alternativo (todas las alertas)');
+          // Solo actualizar si encontramos alertas que no estaban antes
+          if (alertasFinales.length > 0) {
+            setAlertas((prev) => {
+              const idsPrevios = new Set(prev.map(a => a.id));
+              const nuevas = alertasFinales.filter(a => !idsPrevios.has(a.id));
+              if (nuevas.length > 0) {
+                console.log('✅ Listener alternativo encontró', nuevas.length, 'alertas nuevas');
+                return [...prev, ...nuevas].sort((a, b) => {
+                  const fechaA = a.fecha ? a.fecha.getTime() : 0;
+                  const fechaB = b.fecha ? b.fecha.getTime() : 0;
+                  return fechaB - fechaA;
+                }).slice(0, 10);
+              }
+              return prev;
+            });
+          }
+        },
+        (error) => {
+          console.warn('⚠ Error en listener alternativo:', error);
+        }
+      );
+    } catch (errorAlt) {
+      console.warn('No se pudo crear listener alternativo:', errorAlt);
+    }
+
+    // Limpiar listeners al desmontar o cambiar dependencias
     return () => {
       console.log('Limpiando listener de alertas');
       unsubscribeAlertas();
+      if (unsubscribeAlternativo) {
+        unsubscribeAlternativo();
+      }
     };
   }, [rutUsuario, patentesAsignadas]);
 
@@ -281,7 +464,7 @@ export default function PaginaPrincipal() {
           const rutGuardado = await AsyncStorage.getItem('rutUsuario');
           if (!rutGuardado) return;
 
-          // Verificar si hay inscripción activa
+          // Verificar si hay inscripción activa y actualizar patentes
           const listaPasajerosRef = collection(db, 'lista_pasajeros');
           const listaPasajerosSnap = await getDocs(
             query(listaPasajerosRef, where('rutApoderado', '==', rutGuardado)),
@@ -289,9 +472,22 @@ export default function PaginaPrincipal() {
           
           const tieneInscripcionActiva = !listaPasajerosSnap.empty;
           setTieneInscripcion(tieneInscripcionActiva);
+          
+          // Actualizar patentes asignadas
+          const patentesSet = new Set<string>();
+          listaPasajerosSnap.forEach((docSnap) => {
+            const data = docSnap.data() || {};
+            const patente = (data.patenteFurgon || '').toString().trim().toUpperCase();
+            if (patente) {
+              patentesSet.add(patente);
+            }
+          });
+          const patentesLista = Array.from(patentesSet);
+          setPatentesAsignadas(patentesLista);
           setCargandoInscripcion(false);
           
           console.log('Estado de inscripción actualizado:', tieneInscripcionActiva);
+          console.log('Patentes asignadas actualizadas:', patentesLista);
         } catch (error) {
           console.error('Error al recargar datos:', error);
           setCargandoInscripcion(false);
@@ -302,7 +498,32 @@ export default function PaginaPrincipal() {
     }, [])
   );
 
-  const alertasMostradas = alertas.slice(0, 10);
+  // Filtrar alertas que no han sido borradas usando useMemo
+  const alertasFiltradas = useMemo(() => {
+    const alertasBorradasSet = new Set(alertasBorradas);
+    const filtradas = alertas.filter(alerta => {
+      const estaBorrada = alertasBorradasSet.has(alerta.id);
+      if (estaBorrada) {
+        console.log('🚫 Alerta filtrada (borrada):', alerta.id);
+      }
+      return !estaBorrada;
+    });
+    
+    // Log de depuración
+    if (alertas.length > 0 && alertasBorradas.length > 0) {
+      console.log('📊 Filtrado de alertas:', {
+        total: alertas.length,
+        borradas: alertasBorradas.length,
+        filtradas: filtradas.length,
+      });
+    }
+    
+    return filtradas;
+  }, [alertas, alertasBorradas]);
+  
+  const alertasMostradas = useMemo(() => {
+    return alertasFiltradas.slice(0, 10);
+  }, [alertasFiltradas]);
   const hayAlertasSinRevisar = useMemo(() => {
     if (alertasMostradas.length === 0) return false;
     if (!ultimaRevisionAlertas) return true;
@@ -376,6 +597,73 @@ export default function PaginaPrincipal() {
     } catch (error) {
       console.error('Error al cerrar sesión:', error);
     }
+  };
+
+  const borrarHistorialAlertas = () => {
+    console.log('🔴 Botón de borrar presionado');
+    console.log('Alertas mostradas:', alertasMostradas.length);
+    console.log('Alertas totales:', alertas.length);
+    console.log('Alertas borradas actuales:', alertasBorradas.length);
+    
+    if (alertasMostradas.length === 0) {
+      console.log('⚠ No hay alertas para borrar');
+      return;
+    }
+
+    Alert.alert(
+      'Borrar historial',
+      '¿Estás seguro de que deseas borrar todas las notificaciones?',
+      [
+        {
+          text: 'Cancelar',
+          style: 'cancel',
+          onPress: () => {
+            console.log('❌ Usuario canceló el borrado');
+          },
+        },
+        {
+          text: 'Borrar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              console.log('✅ Usuario confirmó el borrado');
+              
+              // Obtener todas las alertas actuales (no solo las mostradas)
+              const idsBorrados = alertas.map(a => a.id);
+              console.log('📝 IDs a marcar como borrados:', idsBorrados);
+              
+              // Actualizar el estado de alertas borradas usando función de actualización
+              setAlertasBorradas(prev => {
+                // Combinar los IDs previos con los nuevos, eliminando duplicados
+                const nuevoArray = [...new Set([...prev, ...idsBorrados])];
+                console.log('🔄 Actualizando estado de alertas borradas:', {
+                  previas: prev.length,
+                  nuevas: idsBorrados.length,
+                  total: nuevoArray.length,
+                });
+                
+                // Guardar en AsyncStorage para persistencia
+                AsyncStorage.setItem('alertasBorradas', JSON.stringify(nuevoArray)).then(() => {
+                  console.log('💾 Alertas borradas guardadas en AsyncStorage:', nuevoArray.length);
+                }).catch(err => {
+                  console.error('Error al guardar en AsyncStorage:', err);
+                });
+                
+                return nuevoArray;
+              });
+              
+              // Marcar todas las alertas como leídas
+              setUltimaRevisionAlertas(Date.now());
+              console.log('✓ Historial de alertas borrado:', idsBorrados.length, 'alertas');
+            } catch (error) {
+              console.error('✗ Error al borrar historial de alertas:', error);
+              Alert.alert('Error', 'No se pudo borrar el historial de alertas.');
+            }
+          },
+        },
+      ],
+      { cancelable: true }
+    );
   };
 
   // Si está cargando o no hay inscripción activa, mostrar vista inicial
@@ -518,7 +806,18 @@ export default function PaginaPrincipal() {
 
         {alertasVisible && (
           <View style={styles.alertas}>
-            <Text style={styles.alertasTitle}>Alertas</Text>
+            <View style={styles.alertasHeader}>
+              <Text style={styles.alertasTitle}>Alertas</Text>
+              {alertasMostradas.length > 0 && (
+                <Pressable
+                  style={styles.borrarButton}
+                  onPress={borrarHistorialAlertas}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Ionicons name="trash-outline" size={18} color="#d32f2f" />
+                </Pressable>
+              )}
+            </View>
             {alertasMostradas.length === 0 ? (
               <Text style={styles.noAlertasText}>No hay alertas nuevas</Text>
             ) : (
@@ -895,11 +1194,24 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     ...surfaceShadow,
   },
+  alertasHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
   alertasTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    marginBottom: 8,
     color: '#127067',
+    flex: 1,
+  },
+  borrarButton: {
+    padding: 6,
+    borderRadius: 6,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#ffebee',
   },
   noAlertasText: {
     fontSize: 14,

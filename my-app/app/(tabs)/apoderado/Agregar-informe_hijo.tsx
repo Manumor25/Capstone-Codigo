@@ -226,14 +226,23 @@ export default function AgregarInformeHijoScreen() {
     try {
       setLoading(true);
 
+      // Normalizar el rutUsuario para guardarlo de forma consistente (sin espacios)
+      const rutUsuarioNormalizado = datosHijo.rutUsuario ? datosHijo.rutUsuario.trim() : '';
+
       const datosCompletos = {
         ...datosHijo,
+        rutUsuario: rutUsuarioNormalizado, // Normalizar RUT sin espacios
         fichaMedica: {
           ...fichaMedica,
           fechaGuardado: new Date().toISOString(),
         },
         actualizadoEn: serverTimestamp(),
       };
+
+      console.log('✅ Guardando hijo con rutUsuario normalizado:', {
+        rutHijo: datosHijo.rut,
+        rutUsuario: rutUsuarioNormalizado,
+      });
 
       await setDoc(doc(db, 'Hijos', datosHijo.rut), datosCompletos, { merge: true });
 

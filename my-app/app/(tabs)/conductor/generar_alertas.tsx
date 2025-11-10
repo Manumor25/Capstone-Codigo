@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Alert,
   Pressable,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { db } from '@/firebaseConfig';
@@ -22,7 +23,10 @@ export default function GenerarAlerta() {
   const [patenteSeleccionada, setPatenteSeleccionada] = useState('');
   const [furgones, setFurgones] = useState<{ id: string; patente: string; nombre: string }[]>([]);
   const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
   const [rutConductor, setRutConductor] = useState('');
+  const [mostrarExito, setMostrarExito] = useState(false);
+  const [mensajeExito, setMensajeExito] = useState('');
   const router = useRouter();
   useSyncRutActivo();
 
@@ -69,30 +73,66 @@ export default function GenerarAlerta() {
   }, []);
 
   const guardarAlerta = async () => {
+    console.log('🔵 Botón presionado - guardarAlerta llamado');
+    console.log('Estado actual:', { descripcion, tipoAlerta, patenteSeleccionada, guardando });
+    
     if (!descripcion || !tipoAlerta || !patenteSeleccionada) {
+      console.log('❌ Campos incompletos');
       Alert.alert('Error', 'Completa todos los campos.');
       return;
     }
 
+    if (guardando) {
+      console.log('⚠️ Ya se está guardando una alerta, esperando...');
+      return;
+    }
+
+    console.log('✅ Iniciando proceso de guardado...');
+    setGuardando(true);
+
     try {
+      console.log('=== INICIANDO GENERACIÓN DE ALERTA ===');
+      console.log('Patente seleccionada:', patenteSeleccionada);
+      console.log('RUT Conductor:', rutConductor);
+      
+      // Normalizar patente para búsqueda consistente
+      const patenteNormalizada = patenteSeleccionada.trim().toUpperCase();
+      console.log('Patente normalizada:', patenteNormalizada);
+      
       const listaRef = collection(db, 'lista_pasajeros');
       const pasajerosSnap = await getDocs(
         query(
           listaRef,
-          where('patenteFurgon', '==', patenteSeleccionada),
           where('rutConductor', '==', rutConductor),
         ),
       );
+
+      console.log('Total pasajeros encontrados:', pasajerosSnap.docs.length);
 
       const destinatarios = new Map<
         string,
         { nombreApoderado: string; rutApoderado: string }
       >();
 
+      // Filtrar pasajeros que coincidan con la patente normalizada
       pasajerosSnap.forEach((docSnap) => {
         const data = docSnap.data() || {};
+        const patenteEnLista = (data.patenteFurgon || '').toString().trim().toUpperCase();
+        
+        console.log('Comparando patente:', {
+          patenteEnLista,
+          patenteNormalizada,
+          coincide: patenteEnLista === patenteNormalizada,
+        });
+        
+        // Solo incluir si la patente coincide
+        if (patenteEnLista !== patenteNormalizada) {
+          return;
+        }
+        
         const rutApoderado = (data.rutApoderado || '').toString().trim();
         if (!rutApoderado) {
+          console.log('RUT apoderado vacío, saltando...');
           return;
         }
         if (!destinatarios.has(rutApoderado)) {
@@ -100,10 +140,18 @@ export default function GenerarAlerta() {
             rutApoderado,
             nombreApoderado: (data.nombreApoderado || '').toString().trim(),
           });
+          console.log('Apoderado agregado:', {
+            rut: rutApoderado,
+            nombre: data.nombreApoderado,
+          });
         }
       });
 
+      console.log('Total destinatarios encontrados:', destinatarios.size);
+
       if (destinatarios.size === 0) {
+        console.log('⚠ No se encontraron apoderados');
+        setGuardando(false);
         Alert.alert(
           'Sin apoderados',
           'No se encontraron apoderados asociados a este furgón.',
@@ -116,37 +164,75 @@ export default function GenerarAlerta() {
       const tipoLimpio = tipoAlerta.trim() || 'general';
       const fechaLocal = new Date().toISOString();
 
-      await Promise.all(
-        Array.from(destinatarios.values()).map((destinatario) =>
-          addDoc(alertasRef, {
+      console.log('Guardando alertas para', destinatarios.size, 'apoderados...');
+      
+      const alertasCreadas = await Promise.all(
+        Array.from(destinatarios.values()).map(async (destinatario) => {
+          const alertaData = {
             descripcion: descripcionLimpia,
             tipoAlerta: tipoLimpio,
             fecha: fechaLocal,
             creadoEn: serverTimestamp(),
-            patenteFurgon: patenteSeleccionada,
-            rutConductor,
-            rutDestinatario: destinatario.rutApoderado,
+            patenteFurgon: patenteNormalizada,
+            rutConductor: rutConductor.trim(),
+            rutDestinatario: destinatario.rutApoderado.trim(),
             parametros: {
-              patenteFurgon: patenteSeleccionada,
+              patenteFurgon: patenteNormalizada,
             },
             origen: 'conductor',
-          }),
-        ),
+          };
+          
+          const rutDestinatarioFinal = destinatario.rutApoderado.trim();
+          console.log('📝 Guardando alerta para:', {
+            rutDestinatarioOriginal: destinatario.rutApoderado,
+            rutDestinatarioFinal,
+            rutDestinatarioNormalizado: rutDestinatarioFinal.replace(/[^0-9kK]/g, '').toUpperCase(),
+            patente: patenteNormalizada,
+          });
+          
+          // Asegurarse de que el RUT se guarde exactamente como está en lista_pasajeros
+          alertaData.rutDestinatario = rutDestinatarioFinal;
+          
+          const docRef = await addDoc(alertasRef, alertaData);
+          console.log('✓ Alerta creada con ID:', docRef.id);
+          console.log('✓ Datos guardados:', {
+            rutDestinatario: alertaData.rutDestinatario,
+            patenteFurgon: alertaData.patenteFurgon,
+            tipoAlerta: alertaData.tipoAlerta,
+          });
+          return docRef.id;
+        }),
       );
 
-      Alert.alert(
-        'Éxito',
-        `Alerta enviada a ${destinatarios.size} apoderado(s).`,
-      );
+      console.log('✓ Todas las alertas guardadas:', alertasCreadas.length);
+      console.log('=== ALERTA GENERADA EXITOSAMENTE ===');
+
+      // Limpiar campos antes de mostrar el mensaje
       setDescripcion('');
       setTipoAlerta('');
       if (furgones.length !== 1) {
         setPatenteSeleccionada('');
       }
-      router.back();
+
+      // Resetear estado de guardando
+      setGuardando(false);
+
+      // Mostrar mensaje de confirmación usando Modal
+      console.log('📢 Mostrando mensaje de confirmación...');
+      setMensajeExito(`Alerta enviada a ${destinatarios.size} apoderado(s).`);
+      setMostrarExito(true);
+      
+      console.log('📢 Mensaje de confirmación mostrado');
     } catch (error) {
-      console.error('Error al guardar alerta:', error);
-      Alert.alert('Error', 'No se pudo guardar la alerta.');
+      console.error('✗ Error al guardar alerta:', error);
+      console.error('Detalles del error:', error);
+      setGuardando(false);
+      Alert.alert(
+        'Error',
+        `No se pudo guardar la alerta: ${error instanceof Error ? error.message : 'Error desconocido'}`,
+        [{ text: 'OK' }],
+        { cancelable: false }
+      );
     }
   };
 
@@ -213,10 +299,58 @@ export default function GenerarAlerta() {
         </Picker>
       </View>
 
-        <TouchableHighlight style={styles.button} onPress={guardarAlerta} underlayColor="#0c5c4e">
-          <Text style={styles.buttonText}>Guardar Alerta</Text>
+        <TouchableHighlight 
+          style={[styles.button, guardando && styles.buttonDisabled]} 
+          onPress={() => {
+            console.log('🔴 Botón presionado - onPress ejecutado');
+            guardarAlerta();
+          }} 
+          underlayColor="#0c5c4e"
+          disabled={guardando}
+        >
+          <Text style={styles.buttonText}>
+            {guardando ? 'Guardando...' : 'Guardar Alerta'}
+          </Text>
         </TouchableHighlight>
       </View>
+
+      {/* Modal de éxito */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={mostrarExito}
+        onRequestClose={() => {
+          setMostrarExito(false);
+          router.back();
+        }}
+      >
+        <Pressable 
+          style={styles.modalOverlay}
+          onPress={() => {
+            setMostrarExito(false);
+            router.back();
+          }}
+        >
+          <Pressable 
+            style={styles.modalContent}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Ionicons name="checkmark-circle" size={64} color="#127067" style={styles.modalIcon} />
+            <Text style={styles.modalTitle}>Alerta generada!</Text>
+            <Text style={styles.modalMessage}>{mensajeExito}</Text>
+            <TouchableHighlight
+              style={styles.modalButton}
+              onPress={() => {
+                setMostrarExito(false);
+                router.back();
+              }}
+              underlayColor="#0c5c4e"
+            >
+              <Text style={styles.modalButtonText}>OK</Text>
+            </TouchableHighlight>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -286,9 +420,56 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     marginTop: 30,
   },
+  buttonDisabled: {
+    backgroundColor: '#999',
+    opacity: 0.6,
+  },
   buttonText: {
     color: '#fff',
     fontSize: 16,
     textAlign: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 30,
+    width: '85%',
+    maxWidth: 400,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalIcon: {
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#127067',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    fontSize: 16,
+    color: '#333',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  modalButton: {
+    backgroundColor: '#127067',
+    paddingVertical: 12,
+    paddingHorizontal: 40,
+    borderRadius: 20,
+    marginTop: 10,
+  },
+  modalButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

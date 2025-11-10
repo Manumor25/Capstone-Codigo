@@ -1,10 +1,14 @@
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { Image } from 'expo-image';
 import { Link } from 'expo-router';
-import { SafeAreaView, StatusBar, StyleSheet, Text, TouchableHighlight, View } from 'react-native';
+import { Platform, SafeAreaView, StatusBar, StyleSheet, Text, TouchableHighlight, View } from 'react-native';
 
 export default function HomeScreen() {
   useSyncRutActivo();
+  const safeAreaStyle = Platform.OS === 'web' 
+    ? styles.safeArea 
+    : { ...styles.safeArea, paddingTop: StatusBar.currentHeight || 0 };
+  
   return (
     <>
       <StatusBar 
@@ -12,7 +16,7 @@ export default function HomeScreen() {
         backgroundColor="transparent"
         barStyle="dark-content"
       />
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={safeAreaStyle}>
         <View style={styles.container}>
           {/* Logo */}
           <Image
@@ -50,7 +54,6 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: '#ffffff',
-    paddingTop: StatusBar.currentHeight || 0,
   },
   container: {
     flex: 1,

@@ -49,6 +49,10 @@ export default function ListaHijosScreen() {
   const modalCallbackRef = useRef<(() => void) | null>(null);
   const isConfirmingRef = useRef(false);
 
+  const normalizarRut = (rut: string): string => {
+    return rut.replace(/[^0-9kK]/g, '').toUpperCase();
+  };
+
   const cargarHijos = useCallback(async () => {
     try {
       const rutGuardado = await AsyncStorage.getItem('rutUsuario');
@@ -61,24 +65,59 @@ export default function ListaHijosScreen() {
 
       setRutUsuario(rutGuardado);
 
+      // Normalizar el RUT del usuario para comparación
+      const rutUsuarioNormalizado = normalizarRut(rutGuardado);
+      const rutUsuarioTrim = rutGuardado.trim();
+
       const hijosRef = collection(db, 'Hijos');
-      const q = query(hijosRef, where('rutUsuario', '==', rutGuardado));
+      const q = query(hijosRef, where('rutUsuario', '==', rutUsuarioTrim));
       const querySnapshot = await getDocs(q);
 
       if (querySnapshot.empty) {
         setHijos([]);
       } else {
-        const listaHijos: Hijo[] = querySnapshot.docs.map((doc) => {
-          const data = doc.data() || {};
-          return {
-            id: doc.id,
-            nombres: data.nombres || 'Sin nombre',
-            apellidos: data.apellidos || 'Sin apellido',
-            rut: data.rut || 'Sin RUT',
-            edad: data.edad !== undefined ? data.edad : '-',
-            fechaNacimiento: data.fechaNacimiento || 'No disponible',
-          };
+        // Filtrar hijos que realmente pertenecen al usuario actual
+        // Comparar tanto el RUT original como el normalizado
+        const listaHijos: Hijo[] = querySnapshot.docs
+          .map((doc) => {
+            const data = doc.data() || {};
+            return {
+              id: doc.id,
+              nombres: data.nombres || 'Sin nombre',
+              apellidos: data.apellidos || 'Sin apellido',
+              rut: data.rut || 'Sin RUT',
+              edad: data.edad !== undefined ? data.edad : '-',
+              fechaNacimiento: data.fechaNacimiento || 'No disponible',
+              rutUsuario: data.rutUsuario || '',
+            };
+          })
+          .filter((hijo: any) => {
+            // Verificar que el hijo pertenece al usuario actual
+            const rutUsuarioHijo = (hijo.rutUsuario || '').toString().trim();
+            const rutUsuarioHijoNormalizado = normalizarRut(rutUsuarioHijo);
+            
+            // Comparar tanto el RUT original como el normalizado
+            return (
+              rutUsuarioHijo === rutUsuarioTrim ||
+              rutUsuarioHijoNormalizado === rutUsuarioNormalizado
+            );
+          })
+          .map((hijo: any) => ({
+            id: hijo.id,
+            nombres: hijo.nombres,
+            apellidos: hijo.apellidos,
+            rut: hijo.rut,
+            edad: hijo.edad,
+            fechaNacimiento: hijo.fechaNacimiento,
+          }));
+        
+        console.log('Hijos cargados para usuario:', {
+          rutUsuario: rutUsuarioTrim,
+          rutUsuarioNormalizado,
+          totalHijosEnDB: querySnapshot.docs.length,
+          hijosFiltrados: listaHijos.length,
         });
+        
         setHijos(listaHijos);
       }
     } catch (error) {
