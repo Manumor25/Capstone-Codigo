@@ -107,69 +107,8 @@ export default function PaginaPrincipal() {
 
         const hijosRef = collection(db, 'Hijos');
         const q = query(hijosRef, where('rutUsuario', '==', rutUsuarioTrim));
-        const querySnapshot = await getDocs(q);
-
-        if (!querySnapshot.empty) {
-          // Filtrar hijos que realmente pertenecen al usuario actual
-          // Comparar tanto el RUT original como el normalizado
-          const listaHijos: Hijo[] = querySnapshot.docs
-            .map((doc) => {
-              const data = doc.data() || {};
-              return {
-                id: doc.id,
-                nombres: data.nombres || 'Sin nombre',
-                apellidos: data.apellidos || 'Sin apellido',
-                rut: data.rut || 'Sin RUT',
-                edad: data.edad !== undefined ? data.edad : '-',
-                fechaNacimiento: data.fechaNacimiento || 'No disponible',
-                horarioAsistencia: Array.isArray(data.horarioAsistencia) ? data.horarioAsistencia : [],
-                rutUsuario: data.rutUsuario || '',
-              };
-            })
-            .filter((hijo: any) => {
-              // Verificar que el hijo pertenece al usuario actual
-              const rutUsuarioHijo = (hijo.rutUsuario || '').toString().trim();
-              const rutUsuarioHijoNormalizado = normalizarRut(rutUsuarioHijo);
-              
-              // Comparar tanto el RUT original como el normalizado
-              return (
-                rutUsuarioHijo === rutUsuarioTrim ||
-                rutUsuarioHijoNormalizado === rutUsuarioNormalizado
-              );
-            })
-            .map((hijo: any) => ({
-              id: hijo.id,
-              nombres: hijo.nombres,
-              apellidos: hijo.apellidos,
-              rut: hijo.rut,
-              edad: hijo.edad,
-              fechaNacimiento: hijo.fechaNacimiento,
-              horarioAsistencia: hijo.horarioAsistencia,
-            }));
-          
-          console.log('Hijos cargados para usuario (página principal):', {
-            rutUsuario: rutUsuarioTrim,
-            rutUsuarioNormalizado,
-            totalHijosEnDB: querySnapshot.docs.length,
-            hijosFiltrados: listaHijos.length,
-          });
-          
-          setHijos(listaHijos);
-          if (listaHijos.length > 0) {
-            const hijoInicial = rutHijoPrevio
-              ? listaHijos.find((hijo) => hijo.rut === rutHijoPrevio) ?? listaHijos[0]
-              : listaHijos[0];
-            setHijoSeleccionado(hijoInicial);
-            AsyncStorage.setItem('rutHijoSeleccionado', hijoInicial.rut).catch((error) => {
-              console.error('No se pudo guardar el RUT del hijo seleccionado:', error);
-            });
-          } else {
-            AsyncStorage.removeItem('rutHijoSeleccionado').catch((error) => {
-              console.error('No se pudo eliminar el RUT del hijo seleccionado:', error);
-            });
-          }
-        }
-
+        
+        // Cargar patentes e inscripciones
         const patentesSet = new Set<string>();
         let tieneInscripcionActiva = false;
         try {
@@ -196,10 +135,113 @@ export default function PaginaPrincipal() {
         setPatentesAsignadas(patentesLista);
         setTieneInscripcion(tieneInscripcionActiva);
         setCargandoInscripcion(false);
+        
+        // Usar onSnapshot para actualización en tiempo real de los hijos
+        const unsubscribeHijos = onSnapshot(
+          q,
+          (querySnapshot) => {
+            if (!querySnapshot.empty) {
+              // Filtrar hijos que realmente pertenecen al usuario actual
+              const listaHijos: Hijo[] = querySnapshot.docs
+                .map((doc) => {
+                  const data = doc.data() || {};
+                  return {
+                    id: doc.id,
+                    nombres: data.nombres || 'Sin nombre',
+                    apellidos: data.apellidos || 'Sin apellido',
+                    rut: data.rut || 'Sin RUT',
+                    edad: data.edad !== undefined ? data.edad : '-',
+                    fechaNacimiento: data.fechaNacimiento || 'No disponible',
+                    horarioAsistencia: Array.isArray(data.horarioAsistencia) 
+                      ? data.horarioAsistencia.map((h: any) => ({
+                          id: h.id || h.dia || '',
+                          etiqueta: h.etiqueta || h.dia || '',
+                          asiste: h.asiste === true,
+                          horaEntrada: h.horaEntrada || '',
+                          horaSalida: h.horaSalida || '',
+                        }))
+                      : [],
+                    rutUsuario: data.rutUsuario || '',
+                  };
+                })
+                .filter((hijo: any) => {
+                  // Verificar que el hijo pertenece al usuario actual
+                  const rutUsuarioHijo = (hijo.rutUsuario || '').toString().trim();
+                  const rutUsuarioHijoNormalizado = normalizarRut(rutUsuarioHijo);
+                  
+                  // Comparar tanto el RUT original como el normalizado
+                  return (
+                    rutUsuarioHijo === rutUsuarioTrim ||
+                    rutUsuarioHijoNormalizado === rutUsuarioNormalizado
+                  );
+                });
+              
+              console.log('Hijos cargados/actualizados para usuario (página principal):', {
+                rutUsuario: rutUsuarioTrim,
+                rutUsuarioNormalizado,
+                totalHijosEnDB: querySnapshot.docs.length,
+                hijosFiltrados: listaHijos.length,
+              });
+              
+              // Log para debug de horarios
+              listaHijos.forEach((hijo) => {
+                if (hijo.horarioAsistencia && hijo.horarioAsistencia.length > 0) {
+                  console.log(`📅 Horarios de ${hijo.nombres} ${hijo.apellidos}:`, hijo.horarioAsistencia);
+                } else {
+                  console.log(`⚠️ ${hijo.nombres} ${hijo.apellidos} NO tiene horarios configurados`);
+                }
+              });
+              
+              setHijos(listaHijos);
+              
+              // Actualizar el hijo seleccionado si existe en la nueva lista
+              setHijoSeleccionado((hijoActual) => {
+                if (hijoActual) {
+                  // Buscar el hijo actualizado en la nueva lista
+                  const hijoActualizado = listaHijos.find((h) => h.rut === hijoActual.rut);
+                  if (hijoActualizado) {
+                    console.log('🔄 Actualizando hijo seleccionado con datos actualizados:', {
+                      nombre: `${hijoActualizado.nombres} ${hijoActualizado.apellidos}`,
+                      horarios: hijoActualizado.horarioAsistencia?.length || 0,
+                    });
+                    return hijoActualizado;
+                  }
+                }
+                
+                // Si no hay hijo seleccionado o no se encuentra, seleccionar el primero o el guardado
+                if (listaHijos.length > 0) {
+                  const hijoInicial = rutHijoPrevio
+                    ? listaHijos.find((hijo) => hijo.rut === rutHijoPrevio) ?? listaHijos[0]
+                    : listaHijos[0];
+                  if (hijoInicial) {
+                    AsyncStorage.setItem('rutHijoSeleccionado', hijoInicial.rut).catch((error) => {
+                      console.error('No se pudo guardar el RUT del hijo seleccionado:', error);
+                    });
+                  }
+                  return hijoInicial;
+                }
+                return null;
+              });
+              
+              setLoadingHijos(false);
+            } else {
+              setHijos([]);
+              setHijoSeleccionado(null);
+              setLoadingHijos(false);
+            }
+          },
+          (error) => {
+            console.error('Error en listener de hijos:', error);
+            setLoadingHijos(false);
+          }
+        );
+        
+        return () => {
+          unsubscribeHijos();
+        };
       } catch (error) {
         console.error('Error al cargar datos:', error);
         Alert.alert('Error', 'No se pudieron cargar los datos.');
-      } finally {
         setLoadingHijos(false);
       }
     };
@@ -730,13 +772,21 @@ export default function PaginaPrincipal() {
     }
   };
 
-  const seleccionarHijo = (hijo: Hijo) => {
+  const seleccionarHijo = useCallback((hijo: Hijo) => {
+    console.log('✅ Hijo seleccionado:', {
+      nombre: `${hijo.nombres} ${hijo.apellidos}`,
+      rut: hijo.rut,
+      tieneHorario: !!hijo.horarioAsistencia,
+      cantidadHorarios: hijo.horarioAsistencia?.length || 0,
+      horarios: hijo.horarioAsistencia,
+    });
+    
     setHijoSeleccionado(hijo);
     setListaHijosVisible(false);
     AsyncStorage.setItem('rutHijoSeleccionado', hijo.rut).catch((error) => {
       console.error('No se pudo guardar el RUT del hijo seleccionado:', error);
     });
-  };
+  }, []);
 
   const handleCerrarSesion = async () => {
     try {
@@ -1023,7 +1073,7 @@ export default function PaginaPrincipal() {
 
       {/* Panel de horarios de clases */}
       {hijoSeleccionado && (
-        <View style={styles.horariosPanel}>
+        <View key={`horarios-${hijoSeleccionado.rut}`} style={styles.horariosPanel}>
           <View style={styles.horariosHeader}>
             <Text style={styles.horariosTitle}>Horario de Clases</Text>
             <Text style={styles.horariosSubtitle}>{hijoSeleccionado.nombres} {hijoSeleccionado.apellidos}</Text>
@@ -1036,19 +1086,86 @@ export default function PaginaPrincipal() {
             </View>
             <ScrollView style={styles.tableBody} showsVerticalScrollIndicator={false}>
               {(() => {
+                // Función para formatear hora de 24h a 12h con AM/PM
+                const formatearHora = (hora24: string): string => {
+                  if (!hora24 || hora24 === '-' || hora24.trim() === '') return '-';
+                  const partes = hora24.split(':');
+                  if (partes.length !== 2) return hora24; // Si no es formato HH:MM, retornar tal cual
+                  
+                  const horas = parseInt(partes[0], 10);
+                  const minutos = partes[1];
+                  
+                  if (isNaN(horas)) return hora24;
+                  
+                  if (horas === 0) {
+                    return `12:${minutos} AM`;
+                  } else if (horas === 12) {
+                    return `12:${minutos} PM`;
+                  } else if (horas < 12) {
+                    return `${horas}:${minutos} AM`;
+                  } else {
+                    return `${horas - 12}:${minutos} PM`;
+                  }
+                };
+
                 const diasSemana = [
-                  { id: 'lunes', etiqueta: 'Lunes' },
-                  { id: 'martes', etiqueta: 'Martes' },
-                  { id: 'miercoles', etiqueta: 'Miércoles' },
-                  { id: 'jueves', etiqueta: 'Jueves' },
-                  { id: 'viernes', etiqueta: 'Viernes' },
+                  { id: 'lunes', etiqueta: 'Lunes', alternativas: ['lunes', 'Lunes', 'LUNES'] },
+                  { id: 'martes', etiqueta: 'Martes', alternativas: ['martes', 'Martes', 'MARTES'] },
+                  { id: 'miercoles', etiqueta: 'Miércoles', alternativas: ['miercoles', 'Miércoles', 'Miércoles', 'MIERCOLES', 'MIÉRCOLES'] },
+                  { id: 'jueves', etiqueta: 'Jueves', alternativas: ['jueves', 'Jueves', 'JUEVES'] },
+                  { id: 'viernes', etiqueta: 'Viernes', alternativas: ['viernes', 'Viernes', 'VIERNES'] },
                 ];
                 
+                const horariosDisponibles = hijoSeleccionado.horarioAsistencia || [];
+                
+                console.log(`📅 Mostrando horarios para ${hijoSeleccionado.nombres} ${hijoSeleccionado.apellidos}:`, {
+                  rut: hijoSeleccionado.rut,
+                  cantidadHorarios: horariosDisponibles.length,
+                  horarios: horariosDisponibles,
+                });
+                
                 return diasSemana.map((diaSemana) => {
-                  const horario = hijoSeleccionado.horarioAsistencia?.find(
-                    (h) => h.id?.toLowerCase() === diaSemana.id || h.etiqueta?.toLowerCase() === diaSemana.etiqueta.toLowerCase()
-                  );
-                  const asiste = horario?.asiste || false;
+                  // Buscar el horario que coincida con este día
+                  const horario = horariosDisponibles.find((h) => {
+                    if (!h) return false;
+                    const idH = (h.id || '').toString().toLowerCase().trim();
+                    const etiquetaH = (h.etiqueta || '').toString().toLowerCase().trim();
+                    const diaId = diaSemana.id.toLowerCase();
+                    
+                    // Comparar también sin acentos y con diferentes variaciones
+                    const idHSinAcentos = idH.replace('é', 'e').replace('á', 'a').replace('í', 'i').replace('ó', 'o').replace('ú', 'u');
+                    const etiquetaHSinAcentos = etiquetaH.replace('é', 'e').replace('á', 'a').replace('í', 'i').replace('ó', 'o').replace('ú', 'u');
+                    const diaIdSinAcentos = diaId.replace('é', 'e');
+                    
+                    const coincide = idH === diaId || 
+                           etiquetaH === diaId || 
+                           idHSinAcentos === diaIdSinAcentos ||
+                           etiquetaHSinAcentos === diaIdSinAcentos ||
+                           diaSemana.alternativas.some(alt => {
+                             const altLower = alt.toLowerCase();
+                             const altSinAcentos = altLower.replace('é', 'e');
+                             return idH === altLower || 
+                                    etiquetaH === altLower ||
+                                    idHSinAcentos === altSinAcentos ||
+                                    etiquetaHSinAcentos === altSinAcentos;
+                           });
+                    
+                    if (coincide && h.asiste) {
+                      console.log(`✅ Horario encontrado para ${diaSemana.etiqueta}:`, {
+                        id: h.id,
+                        etiqueta: h.etiqueta,
+                        asiste: h.asiste,
+                        horaEntrada: h.horaEntrada,
+                        horaSalida: h.horaSalida,
+                      });
+                    }
+                    
+                    return coincide;
+                  });
+                  
+                  const asiste = horario?.asiste === true;
+                  const horaEntrada = asiste && horario?.horaEntrada ? horario.horaEntrada.trim() : '';
+                  const horaSalida = asiste && horario?.horaSalida ? horario.horaSalida.trim() : '';
                   
                   return (
                     <View key={diaSemana.id} style={styles.tableRow}>
@@ -1064,20 +1181,15 @@ export default function PaginaPrincipal() {
                         </View>
                       </View>
                       <Text style={[styles.tableCellText, styles.colHora]}>
-                        {asiste && horario?.horaEntrada ? horario.horaEntrada : '-'}
+                        {horaEntrada ? formatearHora(horaEntrada) : '-'}
                       </Text>
                       <Text style={[styles.tableCellText, styles.colHora]}>
-                        {asiste && horario?.horaSalida ? horario.horaSalida : '-'}
+                        {horaSalida ? formatearHora(horaSalida) : '-'}
                       </Text>
                     </View>
                   );
                 });
               })()}
-              {(!hijoSeleccionado.horarioAsistencia || hijoSeleccionado.horarioAsistencia.length === 0) && (
-                <View style={styles.emptyHorarios}>
-                  <Text style={styles.emptyHorariosText}>No hay días de clases configurados</Text>
-                </View>
-              )}
             </ScrollView>
           </View>
         </View>

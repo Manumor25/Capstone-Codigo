@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Checkbox from 'expo-checkbox';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import React, { useEffect, useState, useMemo } from 'react';
 import {
   ActivityIndicator,
@@ -178,7 +178,7 @@ export default function EditarHorarioHijoScreen() {
     );
   };
 
-  const manejarContinuar = async () => {
+  const manejarGuardar = async () => {
     const diasSeleccionados = horarios.filter((dia) => dia.asiste);
 
     if (diasSeleccionados.length === 0) {
@@ -196,14 +196,37 @@ export default function EditarHorarioHijoScreen() {
     }
 
     try {
-      await AsyncStorage.setItem('editarHijoHorario', JSON.stringify(horarios));
-      router.push({
-        pathname: '/(tabs)/apoderado/Editar_informe_hijo',
-        params: { id: datosHijo?.id || params.id?.toString() || '' },
+      // Obtener el ID del hijo desde datosHijo o desde los parámetros
+      const hijoId = datosHijo?.id || (params.id as string);
+      if (!hijoId) {
+        Alert.alert('Error', 'No se identificó el registro del niño.');
+        router.replace('/(tabs)/apoderado/lista-hijos');
+        return;
+      }
+
+      const horarioSeleccionado = diasSeleccionados.map((dia) => ({
+        id: dia.id,
+        etiqueta: dia.etiqueta,
+        asiste: dia.asiste,
+        horaEntrada: dia.horaEntrada,
+        horaSalida: dia.horaSalida,
+      }));
+
+      const hijoRef = doc(db, 'Hijos', hijoId);
+      
+      await updateDoc(hijoRef, {
+        horarioAsistencia: horarioSeleccionado,
+        actualizadoEn: serverTimestamp(),
       });
+
+      // Limpiar el borrador del horario de AsyncStorage
+      await AsyncStorage.removeItem('editarHijoHorario').catch(() => {});
+
+      Alert.alert('Éxito', 'El horario se actualizó correctamente.');
+      router.replace('/(tabs)/apoderado/lista-hijos');
     } catch (error) {
-      console.error('Error al guardar el horario editado:', error);
-      Alert.alert('Error', 'No se pudo guardar el horario localmente.');
+      console.error('Error al guardar el horario:', error);
+      Alert.alert('Error', 'No se pudo guardar el horario.');
     }
   };
 
@@ -284,8 +307,8 @@ export default function EditarHorarioHijoScreen() {
         ))}
       </ScrollView>
 
-      <Pressable style={styles.button} onPress={manejarContinuar}>
-        <Text style={styles.buttonText}>Continuar</Text>
+      <Pressable style={styles.button} onPress={manejarGuardar}>
+        <Text style={styles.buttonText}>Guardar</Text>
       </Pressable>
     </View>
   );

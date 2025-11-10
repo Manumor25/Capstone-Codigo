@@ -16,6 +16,7 @@ interface Props {
 export default function MapboxDriver({ accessToken, driverLocation, simulatedPath }: Props) {
   const mapContainer = useRef(null);
   const map = useRef<mapboxgl.Map | null>(null);
+  const markerRef = useRef<mapboxgl.Marker | null>(null);
   const [direccion, setDireccion] = useState<string>('');
   const [userLocation, setUserLocation] = useState<LatLng | null>(null);
   
@@ -23,8 +24,35 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
   const MAPBOX_TOKEN = 'pk.eyJ1IjoiYmFydG94IiwiYSI6ImNtaGpxaGZudzE4NHMycnB0bnMwdjVtbHIifQ.Makrf18R1Z9Wo4V-yMXUYw';
   const tokenToUse = MAPBOX_TOKEN || accessToken;
 
-  // Obtener ubicación exacta del conductor/usuario
+  // Si se pasa driverLocation como prop, usarlo directamente y no buscar en Firebase
   useEffect(() => {
+    if (driverLocation) {
+      setUserLocation(null); // Limpiar userLocation para usar driverLocation
+      // Hacer reverse geocoding para obtener la dirección
+      if (tokenToUse) {
+        fetch(
+          `https://api.mapbox.com/geocoding/v5/mapbox.places/${driverLocation.longitude},${driverLocation.latitude}.json?access_token=${tokenToUse}&limit=1&types=address`
+        )
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.features && data.features.length > 0) {
+              setDireccion(data.features[0].place_name || 'Ubicación actual');
+            } else {
+              setDireccion('Ubicación actual');
+            }
+          })
+          .catch(() => {
+            setDireccion('Ubicación actual');
+          });
+      }
+      return; // Salir temprano si hay driverLocation
+    }
+  }, [driverLocation, tokenToUse]);
+
+  // Obtener ubicación exacta del conductor/usuario (solo si no hay driverLocation)
+  useEffect(() => {
+    if (driverLocation) return; // No ejecutar si ya hay driverLocation
+
     const obtenerUbicacionExacta = async () => {
       try {
         const rutGuardado = await AsyncStorage.getItem('rutUsuario');
@@ -210,7 +238,7 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
     };
 
     obtenerUbicacionExacta();
-  }, [tokenToUse]);
+  }, [tokenToUse, driverLocation]);
 
   useEffect(() => {
     if (!accessToken) {
@@ -251,67 +279,71 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
     if (!map.current) return;
 
     const locationToUse = userLocation || driverLocation;
+    
+    // Limpiar marcador anterior si existe
+    if (markerRef.current) {
+      markerRef.current.remove();
+      markerRef.current = null;
+    }
+
+    // Limpiar todos los marcadores existentes
+    const markers = document.getElementsByClassName('mapboxgl-marker');
+    Array.from(markers).forEach((marker) => {
+      marker.remove();
+    });
+
     if (locationToUse) {
-      // Usar zoom más preciso (15-16) para ver mejor la ubicación
-      const zoomLevel = 15.5;
-      
+      // Crear marcador más visible y grande
+      const el = document.createElement('div');
+      el.className = 'custom-location-marker';
+      el.style.width = '32px';
+      el.style.height = '32px';
+      el.style.borderRadius = '50%';
+      el.style.backgroundColor = '#127067';
+      el.style.border = '4px solid #fff';
+      el.style.boxShadow = '0 4px 12px rgba(0,0,0,0.5)';
+      el.style.cursor = 'pointer';
+      el.style.display = 'flex';
+      el.style.alignItems = 'center';
+      el.style.justifyContent = 'center';
+      el.style.zIndex = '1000';
+
+      // Punto central blanco
+      const puntoCentral = document.createElement('div');
+      puntoCentral.style.width = '12px';
+      puntoCentral.style.height = '12px';
+      puntoCentral.style.borderRadius = '50%';
+      puntoCentral.style.backgroundColor = '#fff';
+      el.appendChild(puntoCentral);
+
+      // Crear y agregar marcador
+      const marker = new mapboxgl.Marker({ element: el })
+        .setLngLat([locationToUse.longitude, locationToUse.latitude])
+        .setPopup(
+          new mapboxgl.Popup({ offset: 25, closeButton: true })
+            .setHTML(`<div style="font-weight: 600; color: #127067; padding: 4px;">${direccion || 'Mi ubicación'}</div>`)
+        )
+        .addTo(map.current);
+
+      markerRef.current = marker;
+
+      // Centrar el mapa en la ubicación (solo la primera vez o cuando cambia)
+      const zoomLevel = 16;
       map.current.flyTo({
         center: [locationToUse.longitude, locationToUse.latitude],
         zoom: zoomLevel,
         duration: 1500,
         essential: true
       });
-
-      // Limpiar marcadores existentes antes de agregar uno nuevo
-      const markers = document.getElementsByClassName('mapboxgl-marker');
-      Array.from(markers).forEach((marker) => {
-        marker.remove();
-      });
-
-      // Agregar marcador más visible en la ubicación del conductor
-      const el = document.createElement('div');
-      el.className = 'custom-marker';
-      el.style.width = '20px';
-      el.style.height = '20px';
-      el.style.borderRadius = '50%';
-      el.style.backgroundColor = '#1dbb7f';
-      el.style.border = '3px solid #fff';
-      el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
-      el.style.cursor = 'pointer';
-
-      new mapboxgl.Marker({ element: el })
-        .setLngLat([locationToUse.longitude, locationToUse.latitude])
-        .setPopup(
-          new mapboxgl.Popup({ offset: 25, closeButton: true })
-            .setHTML(`<div style="font-weight: 600; color: #127067;">${direccion || 'Ubicación del conductor'}</div>`)
-        )
-        .addTo(map.current);
-    }
-  }, [userLocation, driverLocation, direccion]);
-
-  useEffect(() => {
-    if (!map.current) return;
-
-    // Solo agregar marcadores del path simulado si no hay ubicación del usuario
-    if (simulatedPath && simulatedPath.length > 0 && !userLocation) {
-      // Clear existing markers except the user location marker
-      const markers = document.getElementsByClassName('mapboxgl-marker');
-      const markersArray = Array.from(markers);
-      markersArray.forEach((marker) => {
-        const markerElement = marker as HTMLElement;
-        if (!markerElement.closest('.mapboxgl-popup')) {
-          marker.remove();
-        }
-      });
-
-      // Add new markers for the simulated path
+    } else if (simulatedPath && simulatedPath.length > 0) {
+      // Si no hay ubicación real, mostrar path simulado
       simulatedPath.forEach(point => {
         new mapboxgl.Marker({ color: '#ff6b6b' })
           .setLngLat([point.longitude, point.latitude])
           .addTo(map.current!);
       });
     }
-  }, [driverLocation, simulatedPath, userLocation]);
+  }, [userLocation, driverLocation, direccion, simulatedPath]);
 
   if (!tokenToUse && !accessToken) {
     return (
@@ -322,20 +354,84 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
     );
   }
 
-  const centrarUbicacion = () => {
+  // Función mejorada para centrar la ubicación
+  const centrarUbicacion = async () => {
     if (!map.current) return;
 
-    const locationToUse = userLocation || driverLocation;
-    if (locationToUse) {
-      const zoomLevel = 15.5;
-      map.current.flyTo({
-        center: [locationToUse.longitude, locationToUse.latitude],
-        zoom: zoomLevel,
-        duration: 1000,
-        essential: true
-      });
+    let locationToUse = userLocation || driverLocation;
+
+    // Si no hay ubicación disponible, intentar obtenerla
+    if (!locationToUse) {
+      try {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const coords = {
+                latitude: position.coords.latitude,
+                longitude: position.coords.longitude,
+              };
+              setUserLocation(coords);
+              centrarMapaEnCoordenadas(coords);
+            },
+            (error) => {
+              console.error('Error al obtener ubicación:', error);
+              // En web, solo mostrar en consola
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 10000,
+              maximumAge: 0,
+            }
+          );
+        }
+      } catch (error) {
+        console.error('Error al obtener ubicación:', error);
+      }
+      return;
     }
+
+    centrarMapaEnCoordenadas(locationToUse);
   };
+
+  const centrarMapaEnCoordenadas = (coords: { latitude: number; longitude: number }) => {
+    if (!map.current) return;
+
+    // Actualizar el marcador si existe
+    if (markerRef.current) {
+      markerRef.current.setLngLat([coords.longitude, coords.latitude]);
+    }
+
+    const zoomLevel = 16;
+    map.current.flyTo({
+      center: [coords.longitude, coords.latitude],
+      zoom: zoomLevel,
+      duration: 800,
+      essential: true,
+    });
+  };
+
+  // Obtener ubicación actual si no hay driverLocation
+  useEffect(() => {
+    if (!driverLocation && !userLocation && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const coords = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          };
+          setUserLocation(coords);
+        },
+        (error) => {
+          console.log('No se pudo obtener la ubicación:', error);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60000,
+        }
+      );
+    }
+  }, [driverLocation]);
 
   return (
     <div style={styles.mapWrapper}>
@@ -345,30 +441,46 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
           <strong>{direccion}</strong>
         </div>
       )}
+      {/* Botón de centrar - siempre visible si hay ubicación disponible */}
       {(userLocation || driverLocation) && (
         <button
-          onClick={centrarUbicacion}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            centrarUbicacion();
+          }}
           style={styles.centerButton}
-          title="Centrar ubicación"
+          title="Centrar en mi ubicación"
+          aria-label="Centrar mapa en ubicación actual"
+          type="button"
           onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = '#f0f0f0';
+            e.currentTarget.style.backgroundColor = '#127067';
+            e.currentTarget.style.color = '#fff';
             e.currentTarget.style.transform = 'scale(1.1)';
+            e.currentTarget.style.boxShadow = '0 6px 24px rgba(18, 112, 103, 0.6)';
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.backgroundColor = '#fff';
+            e.currentTarget.style.color = '#127067';
             e.currentTarget.style.transform = 'scale(1)';
+            e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.5)';
           }}
         >
           <svg
-            width="24"
-            height="24"
+            width="32"
+            height="32"
             viewBox="0 0 24 24"
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
+            style={{ pointerEvents: 'none' }}
           >
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" fill="none" />
+            <circle cx="12" cy="12" r="4" fill="currentColor" />
             <path
-              d="M12 2C8.13 2 5 5.13 5 9C5 14.25 12 22 12 22C12 22 19 14.25 19 9C19 5.13 15.87 2 12 2ZM12 11.5C10.62 11.5 9.5 10.38 9.5 9C9.5 7.62 10.62 6.5 12 6.5C13.38 6.5 14.5 7.62 14.5 9C14.5 10.38 13.38 11.5 12 11.5Z"
-              fill="#127067"
+              d="M12 1V5M12 19V23M1 12H5M19 12H23"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
             />
           </svg>
         </button>
@@ -429,19 +541,20 @@ const styles = {
     position: 'absolute' as const,
     bottom: '20px',
     right: '20px',
-    width: '48px',
-    height: '48px',
+    width: '60px',
+    height: '60px',
     backgroundColor: '#fff',
-    border: 'none',
+    border: '3px solid #127067',
     borderRadius: '50%',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+    boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1000,
     transition: 'all 0.3s ease',
-    padding: '12px',
+    padding: '0',
     outline: 'none',
+    color: '#127067',
   },
 };

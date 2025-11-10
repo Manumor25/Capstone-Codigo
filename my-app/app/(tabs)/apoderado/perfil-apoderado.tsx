@@ -4,15 +4,19 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
 import { Link, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { Alert, Modal, Pressable, StyleSheet, Text, TouchableHighlight, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, TouchableHighlight, View, ScrollView, ActivityIndicator } from 'react-native';
 import { db } from '@/firebaseConfig';
-import { collection, deleteDoc, doc, getDocs, query, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, query, where, onSnapshot, limit } from 'firebase/firestore';
+import MapboxDriver from '../../../components/MapboxDriver';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const [userName, setUserName] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
   const [borrandoCuenta, setBorrandoCuenta] = useState(false);
+  const [ubicacionConductor, setUbicacionConductor] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [rutConductor, setRutConductor] = useState<string>('');
+  const [cargandoUbicacion, setCargandoUbicacion] = useState(true);
   useSyncRutActivo();
 
   const handleLogout = async () => {
@@ -109,6 +113,89 @@ export default function ProfileScreen() {
     loadUserData();
   }, []);
 
+  // Obtener ubicación del conductor
+  useEffect(() => {
+    let unsubscribeUbicacion: (() => void) | null = null;
+
+    const obtenerUbicacionConductor = async () => {
+      try {
+        const rutApoderado = await AsyncStorage.getItem('rutUsuario');
+        if (!rutApoderado) {
+          setCargandoUbicacion(false);
+          return;
+        }
+
+        // 1. Obtener el RUT del conductor desde lista_pasajeros
+        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+        const listaPasajerosQuery = query(
+          listaPasajerosRef,
+          where('rutApoderado', '==', rutApoderado.trim()),
+          limit(1)
+        );
+
+        const listaPasajerosSnap = await getDocs(listaPasajerosQuery);
+
+        if (listaPasajerosSnap.empty) {
+          console.log('No se encontró conductor asignado');
+          setCargandoUbicacion(false);
+          return;
+        }
+
+        const pasajeroData = listaPasajerosSnap.docs[0].data();
+        const rutConductorEncontrado = (pasajeroData.rutConductor || '').toString().trim();
+
+        if (!rutConductorEncontrado) {
+          console.log('No se encontró RUT del conductor');
+          setCargandoUbicacion(false);
+          return;
+        }
+
+        setRutConductor(rutConductorEncontrado);
+
+        // 2. Escuchar cambios en tiempo real de la ubicación del conductor
+        const ubicacionRef = doc(db, 'ubicaciones_conductor', rutConductorEncontrado);
+        
+        unsubscribeUbicacion = onSnapshot(
+          ubicacionRef,
+          (snapshot) => {
+            if (snapshot.exists()) {
+              const data = snapshot.data();
+              if (data.latitude && data.longitude) {
+                setUbicacionConductor({
+                  latitude: data.latitude,
+                  longitude: data.longitude,
+                });
+                console.log('Ubicación del conductor actualizada:', {
+                  latitude: data.latitude,
+                  longitude: data.longitude,
+                });
+              }
+            } else {
+              console.log('No hay ubicación del conductor disponible');
+              setUbicacionConductor(null);
+            }
+            setCargandoUbicacion(false);
+          },
+          (error) => {
+            console.error('Error al obtener ubicación del conductor:', error);
+            setCargandoUbicacion(false);
+          }
+        );
+      } catch (error) {
+        console.error('Error al obtener ubicación del conductor:', error);
+        setCargandoUbicacion(false);
+      }
+    };
+
+    obtenerUbicacionConductor();
+
+    return () => {
+      if (unsubscribeUbicacion) {
+        unsubscribeUbicacion();
+      }
+    };
+  }, []);
+
   return (
     <View style={styles.container}>
       {/* Botón de volver */}
@@ -125,67 +212,102 @@ export default function ProfileScreen() {
         <Ionicons name="arrow-back" size={28} color="#127067" />
       </Pressable>
 
-      {/* Icono de usuario */}
-      <View style={styles.profileImageContainer}>
-        <Image
-          source={require('@/assets/images/user_icon.png')}
-          style={styles.profileImage}
-          contentFit="cover"
-        />
-      </View>
-
-      {/* Nombre dinámico */}
-      <Text style={styles.userName}>{userName}</Text>
-
-      {/* Botones */}
-      <Link href="/apoderado/Editar_datos_apoderado" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Editar datos</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <Link href="/apoderado/Agregar-hijo" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Añadir hijo</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <Link href="/apoderado/lista-hijos" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Editar hijo</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <Link href="/apoderado/Agregar_tutor" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Añadir tutor</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <Link href="/apoderado/lista-tutores" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Editar tutor</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <TouchableHighlight 
-        style={[styles.button, styles.logoutButton]} 
-        underlayColor="#b33d3d"
-        onPress={handleLogout}
+      <ScrollView 
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.buttonText}>Cerrar sesión</Text>
-      </TouchableHighlight>
+        {/* Icono de usuario */}
+        <View style={styles.profileImageContainer}>
+          <Image
+            source={require('@/assets/images/user_icon.png')}
+            style={styles.profileImage}
+            contentFit="cover"
+          />
+        </View>
 
-      <TouchableHighlight 
-        style={[styles.button, styles.deleteButton]} 
-        underlayColor="#8b1a1a"
-        onPress={handleBorrarCuenta}
-        disabled={borrandoCuenta}
-      >
-        <Text style={styles.buttonText}>
-          {borrandoCuenta ? 'Eliminando...' : 'Borrar cuenta'}
-        </Text>
-      </TouchableHighlight>
+        {/* Nombre dinámico */}
+        <Text style={styles.userName}>{userName}</Text>
+
+        {/* Mapa con ubicación del conductor */}
+        {cargandoUbicacion ? (
+          <View style={styles.mapaContainer}>
+            <Text style={styles.mapaTitle}>Ubicación del Conductor</Text>
+            <View style={styles.mapaWrapper}>
+              <ActivityIndicator size="large" color="#127067" style={styles.loader} />
+              <Text style={styles.loadingText}>Cargando ubicación...</Text>
+            </View>
+          </View>
+        ) : ubicacionConductor ? (
+          <View style={styles.mapaContainer}>
+            <Text style={styles.mapaTitle}>Ubicación del Conductor</Text>
+            <View style={styles.mapaWrapper}>
+              <MapboxDriver
+                accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
+                driverLocation={ubicacionConductor}
+              />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.mapaContainer}>
+            <Text style={styles.mapaTitle}>Ubicación del Conductor</Text>
+            <View style={styles.mapaWrapper}>
+              <Text style={styles.noUbicacionText}>
+                No hay conductor asignado o ubicación no disponible
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Botones */}
+        <Link href="/apoderado/Editar_datos_apoderado" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Editar datos</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/apoderado/Agregar-hijo" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Añadir hijo</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/apoderado/lista-hijos" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Editar hijo</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/apoderado/Agregar_tutor" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Añadir tutor</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/apoderado/lista-tutores" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Editar tutor</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <TouchableHighlight 
+          style={[styles.button, styles.logoutButton]} 
+          underlayColor="#b33d3d"
+          onPress={handleLogout}
+        >
+          <Text style={styles.buttonText}>Cerrar sesión</Text>
+        </TouchableHighlight>
+
+        <TouchableHighlight 
+          style={[styles.button, styles.deleteButton]} 
+          underlayColor="#8b1a1a"
+          onPress={handleBorrarCuenta}
+          disabled={borrandoCuenta}
+        >
+          <Text style={styles.buttonText}>
+            {borrandoCuenta ? 'Eliminando...' : 'Borrar cuenta'}
+          </Text>
+        </TouchableHighlight>
+      </ScrollView>
 
       {/* Modal de confirmación */}
       <Modal
@@ -239,8 +361,48 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#ffffff',
     paddingTop: 50,
+  },
+  scrollContent: {
     paddingHorizontal: 20,
+    paddingBottom: 40,
     alignItems: 'center',
+  },
+  mapaContainer: {
+    width: '100%',
+    marginVertical: 20,
+    marginBottom: 30,
+  },
+  mapaTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#127067',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  mapaWrapper: {
+    width: '100%',
+    height: 300,
+    borderRadius: 15,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#127067',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f5f5f5',
+  },
+  loader: {
+    marginBottom: 10,
+  },
+  loadingText: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+  },
+  noUbicacionText: {
+    fontSize: 14,
+    color: '#999',
+    textAlign: 'center',
+    paddingHorizontal: 20,
   },
   logoutButton: {
     backgroundColor: '#d32f2f',

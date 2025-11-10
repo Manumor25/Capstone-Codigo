@@ -3,15 +3,20 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
 import { Link, useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
-import { Alert, Modal, Pressable, StyleSheet, Text, TouchableHighlight, View } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import { Alert, Modal, Pressable, StyleSheet, Text, TouchableHighlight, View, ScrollView } from 'react-native';
 import { db } from '@/firebaseConfig';
-import { collection, deleteDoc, getDocs, query, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, query, setDoc, where, serverTimestamp } from 'firebase/firestore';
+import MapboxDriver from '../../../components/MapboxDriver';
+import * as Location from 'expo-location';
 
 export default function ProfileScreen() {
   const [userName, setUserName] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
   const [borrandoCuenta, setBorrandoCuenta] = useState(false);
+  const [ubicacionActual, setUbicacionActual] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [rutUsuario, setRutUsuario] = useState<string>('');
+  const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
   const router = useRouter();
   useSyncRutActivo();
 
@@ -122,12 +127,139 @@ export default function ProfileScreen() {
         const name = await AsyncStorage.getItem('userName');
         if (name && name.trim() !== '') setUserName(name);
         else setUserName('Usuario');
+        
+        const rut = await AsyncStorage.getItem('rutUsuario');
+        if (rut) {
+          setRutUsuario(rut.trim());
+        }
       } catch (error) {
         setUserName('Usuario');
       }
     };
     loadUserData();
   }, []);
+
+  // Obtener y actualizar ubicación en tiempo real
+  useEffect(() => {
+    let isMounted = true;
+    let watchSubscription: Location.LocationSubscription | null = null;
+
+    const obtenerUbicacion = async () => {
+      try {
+        // Pedir permisos de ubicación
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permisos', 'Se requieren permisos de ubicación para mostrar tu ubicación actual.');
+          return;
+        }
+
+        // Obtener ubicación inicial
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+
+        if (isMounted) {
+          const coords = {
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+          };
+          setUbicacionActual(coords);
+
+          // Guardar ubicación en Firestore
+          if (rutUsuario) {
+            await guardarUbicacionEnFirestore(coords);
+          }
+        }
+
+        // Observar cambios de ubicación cada 10 segundos
+        watchSubscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 10000, // Actualizar cada 10 segundos
+            distanceInterval: 50, // O actualizar cada 50 metros
+          },
+          async (location) => {
+            if (isMounted) {
+              const coords = {
+                latitude: location.coords.latitude,
+                longitude: location.coords.longitude,
+              };
+              setUbicacionActual(coords);
+
+              // Guardar ubicación en Firestore
+              if (rutUsuario) {
+                await guardarUbicacionEnFirestore(coords);
+              }
+            }
+          }
+        );
+
+        locationWatchRef.current = watchSubscription;
+      } catch (error) {
+        console.error('Error al obtener ubicación:', error);
+        // En web, usar geolocation del navegador como fallback
+        if (typeof navigator !== 'undefined' && navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              if (isMounted) {
+                const coords = {
+                  latitude: position.coords.latitude,
+                  longitude: position.coords.longitude,
+                };
+                setUbicacionActual(coords);
+                if (rutUsuario) {
+                  guardarUbicacionEnFirestore(coords);
+                }
+              }
+            },
+            (error) => {
+              console.error('Error en geolocation:', error);
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 10000,
+              maximumAge: 0,
+            }
+          );
+        }
+      }
+    };
+
+    const guardarUbicacionEnFirestore = async (coords: { latitude: number; longitude: number }) => {
+      try {
+        if (!rutUsuario) return;
+
+        const ubicacionRef = doc(db, 'ubicaciones_conductor', rutUsuario);
+        await setDoc(
+          ubicacionRef,
+          {
+            rutConductor: rutUsuario,
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            actualizadoEn: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        console.log('Ubicación guardada en Firestore:', coords);
+      } catch (error) {
+        console.error('Error al guardar ubicación en Firestore:', error);
+      }
+    };
+
+    if (rutUsuario) {
+      obtenerUbicacion();
+    }
+
+    return () => {
+      isMounted = false;
+      if (watchSubscription) {
+        watchSubscription.remove();
+      }
+      if (locationWatchRef.current) {
+        locationWatchRef.current.remove();
+      }
+    };
+  }, [rutUsuario]);
 
   const handleVolver = () => {
     if (router.canGoBack?.()) {
@@ -144,73 +276,91 @@ export default function ProfileScreen() {
         <Ionicons name="arrow-back" size={28} color="#127067" />
       </Pressable>
 
-      {/* Icono de usuario */}
-      <View style={styles.profileImageContainer}>
-        <Image
-          source={require('@/assets/images/user_icon.png')}
-          style={styles.profileImage}
-          contentFit="cover"
-        />
-      </View>
-
-      {/* Nombre dinámico */}
-      <Text style={styles.userName}>{userName}</Text>
-
-      {/* Botones con tamaño ajustado */}
-      <Link href="/conductor/Editar_datos_conductor" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Editar datos conductor</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <Link href="/conductor/Agregar_furgon" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Agregar furgon</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <Link href="/conductor/borrar-furgones" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#b33d3d">
-          <Text style={styles.buttonText}>Borrar furgones</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <Link href="/conductor/lista_vehiculos" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Editar datos vehículo</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <Link href="/apoderado/lista-hijos" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Añadir documentos</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <Link href="/apoderado/lista-tutores" asChild>
-        <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
-          <Text style={styles.buttonText}>Editar documentos</Text>
-        </TouchableHighlight>
-      </Link>
-
-      <TouchableHighlight 
-        style={[styles.button, styles.logoutButton]} 
-        underlayColor="#b33d3d"
-        onPress={handleLogout}
+      <ScrollView 
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.buttonText}>Cerrar sesión</Text>
-      </TouchableHighlight>
+        {/* Icono de usuario */}
+        <View style={styles.profileImageContainer}>
+          <Image
+            source={require('@/assets/images/user_icon.png')}
+            style={styles.profileImage}
+            contentFit="cover"
+          />
+        </View>
 
-      <TouchableHighlight 
-        style={[styles.button, styles.deleteButton]} 
-        underlayColor="#8b1a1a"
-        onPress={handleBorrarCuenta}
-        disabled={borrandoCuenta}
-      >
-        <Text style={styles.buttonText}>
-          {borrandoCuenta ? 'Eliminando...' : 'Borrar cuenta'}
-        </Text>
-      </TouchableHighlight>
+        {/* Nombre dinámico */}
+        <Text style={styles.userName}>{userName}</Text>
+
+        {/* Mapa con ubicación actual */}
+        {ubicacionActual && (
+          <View style={styles.mapaContainer}>
+            <Text style={styles.mapaTitle}>Mi Ubicación Actual</Text>
+            <View style={styles.mapaWrapper}>
+              <MapboxDriver
+                accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
+                driverLocation={ubicacionActual}
+              />
+            </View>
+          </View>
+        )}
+
+        {/* Botones con tamaño ajustado */}
+        <Link href="/conductor/Editar_datos_conductor" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Editar datos conductor</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/conductor/Agregar_furgon" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Agregar furgon</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/conductor/borrar-furgones" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#b33d3d">
+            <Text style={styles.buttonText}>Borrar furgones</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/conductor/lista_vehiculos" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Editar datos vehículo</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/apoderado/lista-hijos" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Añadir documentos</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/apoderado/lista-tutores" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Editar documentos</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <TouchableHighlight 
+          style={[styles.button, styles.logoutButton]} 
+          underlayColor="#b33d3d"
+          onPress={handleLogout}
+        >
+          <Text style={styles.buttonText}>Cerrar sesión</Text>
+        </TouchableHighlight>
+
+        <TouchableHighlight 
+          style={[styles.button, styles.deleteButton]} 
+          underlayColor="#8b1a1a"
+          onPress={handleBorrarCuenta}
+          disabled={borrandoCuenta}
+        >
+          <Text style={styles.buttonText}>
+            {borrandoCuenta ? 'Eliminando...' : 'Borrar cuenta'}
+          </Text>
+        </TouchableHighlight>
+      </ScrollView>
 
       {/* Modal de confirmación */}
       <Modal
@@ -265,10 +415,32 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#ffffff',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
     paddingTop: 80, // espacio para el botón de volver
+  },
+  scrollContent: {
+    padding: 20,
+    paddingBottom: 40,
+    alignItems: 'center',
+  },
+  mapaContainer: {
+    width: '100%',
+    marginVertical: 20,
+    marginBottom: 30,
+  },
+  mapaTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#127067',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  mapaWrapper: {
+    width: '100%',
+    height: 300,
+    borderRadius: 15,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#127067',
   },
   logoutButton: {
     backgroundColor: '#d32f2f',
