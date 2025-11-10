@@ -3,16 +3,17 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Checkbox from 'expo-checkbox';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   Alert,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
+  Platform,
 } from 'react-native';
+import { Picker } from '@react-native-picker/picker';
 
 interface HorarioDia {
   id: string;
@@ -30,12 +31,53 @@ const DIAS_SEMANA: HorarioDia[] = [
   { id: 'viernes', etiqueta: 'Viernes', asiste: false, horaEntrada: '', horaSalida: '' },
 ];
 
+// Función para generar opciones de horas desde 07:00 AM hasta 18:00 PM cada media hora
+const generarOpcionesHoras = (): Array<{ label: string; value: string }> => {
+  const opciones: Array<{ label: string; value: string }> = [];
+  
+  // Agregar opción vacía
+  opciones.push({ label: 'Seleccionar hora', value: '' });
+  
+  // Generar horas desde las 7:00 AM (07:00) hasta las 6:00 PM (18:00)
+  for (let hora = 7; hora <= 18; hora++) {
+    // Para cada hora, generar :00 y :30
+    for (let minuto = 0; minuto < 60; minuto += 30) {
+      // Si llegamos a las 18:30, no incluirla (solo hasta 18:00)
+      if (hora === 18 && minuto === 30) {
+        break;
+      }
+      
+      // Formatear hora en formato 24 horas (HH:MM)
+      const hora24 = hora.toString().padStart(2, '0');
+      const minutoStr = minuto.toString().padStart(2, '0');
+      const valor = `${hora24}:${minutoStr}`;
+      
+      // Formatear para mostrar en formato 12 horas con AM/PM
+      let hora12 = hora;
+      const periodo = hora >= 12 ? 'PM' : 'AM';
+      if (hora > 12) {
+        hora12 = hora - 12;
+      } else if (hora === 0) {
+        hora12 = 12;
+      }
+      
+      const label = `${hora12}:${minutoStr} ${periodo}`;
+      opciones.push({ label, value: valor });
+    }
+  }
+  
+  return opciones;
+};
+
 export default function AgregarHorarioHijoScreen() {
   const router = useRouter();
   useSyncRutActivo();
 
   const [horarios, setHorarios] = useState<HorarioDia[]>(DIAS_SEMANA);
   const [cargando, setCargando] = useState(true);
+  
+  // Generar opciones de horas una sola vez
+  const opcionesHoras = useMemo(() => generarOpcionesHoras(), []);
 
   useEffect(() => {
     const verificarDatosPrevios = async () => {
@@ -67,40 +109,9 @@ export default function AgregarHorarioHijoScreen() {
     );
   };
 
-  // Función para formatear hora automáticamente (HH:MM)
-  const formatearHora = (text: string): string => {
-    // Remover todo excepto números
-    let numeros = text.replace(/[^0-9]/g, '');
-    
-    // Si no hay nada, retornar vacío
-    if (numeros.length === 0) {
-      return '';
-    }
-    
-    // Limitar a máximo 4 dígitos (HHMM)
-    if (numeros.length > 4) {
-      numeros = numeros.slice(0, 4);
-    }
-    
-    // Formatear según la longitud
-    if (numeros.length <= 2) {
-      // Si tiene 1 o 2 dígitos, solo mostrar los números
-      return numeros;
-    } else {
-      // Si tiene 3 o 4 dígitos, agregar los dos puntos
-      // Formato: HH:MM
-      const horas = numeros.slice(0, 2);
-      const minutos = numeros.slice(2);
-      return horas + ':' + minutos;
-    }
-  };
-
   const actualizarHorario = (id: string, campo: 'horaEntrada' | 'horaSalida', valor: string) => {
-    // Formatear la hora automáticamente
-    const horaFormateada = formatearHora(valor);
-    
     setHorarios((prev) =>
-      prev.map((dia) => (dia.id === id ? { ...dia, [campo]: horaFormateada } : dia)),
+      prev.map((dia) => (dia.id === id ? { ...dia, [campo]: valor } : dia)),
     );
   };
 
@@ -163,25 +174,43 @@ export default function AgregarHorarioHijoScreen() {
               <View style={styles.timeInputs}>
                 <View style={styles.timeGroup}>
                   <Text style={styles.timeLabel}>Entrada</Text>
-                  <TextInput
-                    style={styles.timeInput}
-                    placeholder="HH:MM"
-                    value={dia.horaEntrada}
-                    onChangeText={(texto) => actualizarHorario(dia.id, 'horaEntrada', texto)}
-                    keyboardType="numeric"
-                    maxLength={5}
-                  />
+                  <View style={styles.pickerContainer}>
+                    <Picker
+                      selectedValue={dia.horaEntrada}
+                      onValueChange={(valor) => actualizarHorario(dia.id, 'horaEntrada', valor)}
+                      style={styles.picker}
+                      itemStyle={Platform.OS === 'ios' ? styles.pickerItem : undefined}
+                    >
+                      {opcionesHoras.map((opcion, index) => (
+                        <Picker.Item
+                          key={index}
+                          label={opcion.label}
+                          value={opcion.value}
+                          color={opcion.value === '' ? '#999' : '#000'}
+                        />
+                      ))}
+                    </Picker>
+                  </View>
                 </View>
                 <View style={styles.timeGroup}>
                   <Text style={styles.timeLabel}>Salida</Text>
-                  <TextInput
-                    style={styles.timeInput}
-                    placeholder="HH:MM"
-                    value={dia.horaSalida}
-                    onChangeText={(texto) => actualizarHorario(dia.id, 'horaSalida', texto)}
-                    keyboardType="numeric"
-                    maxLength={5}
-                  />
+                  <View style={styles.pickerContainer}>
+                    <Picker
+                      selectedValue={dia.horaSalida}
+                      onValueChange={(valor) => actualizarHorario(dia.id, 'horaSalida', valor)}
+                      style={styles.picker}
+                      itemStyle={Platform.OS === 'ios' ? styles.pickerItem : undefined}
+                    >
+                      {opcionesHoras.map((opcion, index) => (
+                        <Picker.Item
+                          key={index}
+                          label={opcion.label}
+                          value={opcion.value}
+                          color={opcion.value === '' ? '#999' : '#000'}
+                        />
+                      ))}
+                    </Picker>
+                  </View>
                 </View>
               </View>
             )}
@@ -246,24 +275,33 @@ const styles = StyleSheet.create({
   },
   timeInputs: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     marginTop: 14,
   },
   timeGroup: {
-    flex: 1,
-    marginRight: 8,
+    width: '45%',
+    maxWidth: 160,
+    marginRight: 12,
   },
   timeLabel: {
     fontSize: 14,
     color: '#555',
     marginBottom: 4,
+    fontWeight: '500',
   },
-  timeInput: {
+  pickerContainer: {
     borderWidth: 1,
     borderColor: '#127067',
     borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    overflow: 'hidden',
+    backgroundColor: '#fff',
+  },
+  picker: {
+    width: '100%',
+    height: Platform.OS === 'ios' ? 150 : 50,
+  },
+  pickerItem: {
+    fontSize: 16,
   },
   button: {
     backgroundColor: '#127067',

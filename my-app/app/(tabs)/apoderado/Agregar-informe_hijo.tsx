@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -17,6 +18,33 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Picker } from '@react-native-picker/picker';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
+
+// Lista de países latinoamericanos con Chile primero
+const PAISES_LATINOAMERICANOS = [
+  'Chilena',
+  'Argentina',
+  'Bolivia',
+  'Brasil',
+  'Colombia',
+  'Costa Rica',
+  'Cuba',
+  'República Dominicana',
+  'Ecuador',
+  'El Salvador',
+  'Guatemala',
+  'Honduras',
+  'México',
+  'Nicaragua',
+  'Panamá',
+  'Paraguay',
+  'Perú',
+  'Puerto Rico',
+  'Uruguay',
+  'Venezuela',
+];
 
 interface DatosHijoDraft {
   nombres: string;
@@ -26,6 +54,13 @@ interface DatosHijoDraft {
   edad: string;
   rutUsuario: string;
 }
+
+type FotoHijo = {
+  base64: string;
+  mimeType: string;
+  previewUri: string;
+  name?: string;
+};
 
 interface FichaMedica {
   // Datos del estudiante
@@ -95,6 +130,7 @@ export default function AgregarInformeHijoScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [aprobado, setAprobado] = useState(false);
   const [modalExitoVisible, setModalExitoVisible] = useState(false);
+  const [fotoHijo, setFotoHijo] = useState<FotoHijo | null>(null);
 
   const [fichaMedica, setFichaMedica] = useState<FichaMedica>({
     nombreCompleto: '',
@@ -162,6 +198,20 @@ export default function AgregarInformeHijoScreen() {
           fechaNacimiento: datos.fechaNacimiento,
           edad: datos.edad,
         }));
+
+        // Cargar foto guardada si existe
+        const fotoRaw = await AsyncStorage.getItem('nuevoHijoFoto');
+        if (fotoRaw) {
+          try {
+            const fotoParsed = JSON.parse(fotoRaw);
+            if (fotoParsed && !fotoParsed.previewUri && fotoParsed.base64 && fotoParsed.mimeType) {
+              fotoParsed.previewUri = `data:${fotoParsed.mimeType};base64,${fotoParsed.base64}`;
+            }
+            setFotoHijo(fotoParsed);
+          } catch (error) {
+            console.warn('Error al cargar foto guardada:', error);
+          }
+        }
       } catch (error) {
         console.error('Error al cargar datos:', error);
         Alert.alert('Error', 'No se pudieron cargar los datos previos.');
@@ -173,6 +223,101 @@ export default function AgregarInformeHijoScreen() {
 
   const actualizarCampo = (campo: keyof FichaMedica, valor: any) => {
     setFichaMedica(prev => ({ ...prev, [campo]: valor }));
+  };
+
+  const mostrarOpcionesFoto = () => {
+    Alert.alert(
+      'Seleccionar foto',
+      '¿Cómo deseas agregar la foto?',
+      [
+        {
+          text: 'Tomar foto',
+          onPress: () => tomarFoto(),
+        },
+        {
+          text: 'Galería',
+          onPress: () => seleccionarDeGaleria(),
+        },
+        {
+          text: 'Cancelar',
+          style: 'cancel',
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
+  const tomarFoto = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== ImagePicker.PermissionStatus.GRANTED) {
+        Alert.alert('Permiso requerido', 'Otorga acceso a la cámara para tomar una foto.');
+        return;
+      }
+
+      const resultado = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+        base64: true,
+      });
+
+      if (resultado.canceled || !resultado.assets?.length) {
+        return;
+      }
+
+      await procesarImagen(resultado.assets[0]);
+    } catch (error) {
+      console.error('Error al tomar foto:', error);
+      Alert.alert('Error', 'No se pudo tomar la foto. Intenta nuevamente.');
+    }
+  };
+
+  const seleccionarDeGaleria = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== ImagePicker.PermissionStatus.GRANTED) {
+        Alert.alert('Permiso requerido', 'Otorga acceso a tu galería para cargar la imagen.');
+        return;
+      }
+
+      const resultado = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+        base64: true,
+      });
+
+      if (resultado.canceled || !resultado.assets?.length) {
+        return;
+      }
+
+      await procesarImagen(resultado.assets[0]);
+    } catch (error) {
+      console.error('Error al seleccionar imagen:', error);
+      Alert.alert('Error', 'No se pudo seleccionar la imagen. Intenta nuevamente.');
+    }
+  };
+
+  const procesarImagen = async (asset: ImagePicker.ImagePickerAsset) => {
+    if (!asset.base64) {
+      Alert.alert('Error', 'No se pudo leer la imagen seleccionada.');
+      return;
+    }
+
+    const mimeType = asset.mimeType || 'image/jpeg';
+    const previewUri = `data:${mimeType};base64,${asset.base64}`;
+    const foto: FotoHijo = {
+      base64: asset.base64,
+      mimeType,
+      previewUri,
+      name: asset.fileName || asset.uri?.split('/')?.pop() || 'foto_hijo.jpg',
+    };
+
+    setFotoHijo(foto);
+    await AsyncStorage.setItem('nuevoHijoFoto', JSON.stringify(foto));
   };
 
   const actualizarCondicion = (condicion: keyof FichaMedica['condiciones'], valor: boolean) => {
@@ -229,7 +374,7 @@ export default function AgregarInformeHijoScreen() {
       // Normalizar el rutUsuario para guardarlo de forma consistente (sin espacios)
       const rutUsuarioNormalizado = datosHijo.rutUsuario ? datosHijo.rutUsuario.trim() : '';
 
-      const datosCompletos = {
+      const datosCompletos: any = {
         ...datosHijo,
         rutUsuario: rutUsuarioNormalizado, // Normalizar RUT sin espacios
         fichaMedica: {
@@ -239,14 +384,24 @@ export default function AgregarInformeHijoScreen() {
         actualizadoEn: serverTimestamp(),
       };
 
+      // Agregar foto si existe
+      if (fotoHijo) {
+        datosCompletos.fotoHijo = {
+          base64: fotoHijo.base64,
+          mimeType: fotoHijo.mimeType,
+          nombreArchivo: fotoHijo.name || 'foto_hijo.jpg',
+        };
+      }
+
       console.log('✅ Guardando hijo con rutUsuario normalizado:', {
         rutHijo: datosHijo.rut,
         rutUsuario: rutUsuarioNormalizado,
+        tieneFoto: !!fotoHijo,
       });
 
       await setDoc(doc(db, 'Hijos', datosHijo.rut), datosCompletos, { merge: true });
 
-      await AsyncStorage.multiRemove(['nuevoHijoData', 'nuevoHijoHorario']);
+      await AsyncStorage.multiRemove(['nuevoHijoData', 'nuevoHijoHorario', 'nuevoHijoFoto']);
 
       // Cerrar el modal de confirmación
       setModalVisible(false);
@@ -275,6 +430,48 @@ export default function AgregarInformeHijoScreen() {
 
       <Text style={styles.title}>Ficha Médica</Text>
 
+      {/* Sección de foto del hijo */}
+      <View style={styles.fotoContainer}>
+        <Pressable style={styles.fotoButton} onPress={mostrarOpcionesFoto}>
+          {fotoHijo ? (
+            <View style={styles.fotoPreviewContainer}>
+              <Image source={{ uri: fotoHijo.previewUri }} style={styles.fotoPreview} contentFit="cover" />
+              <Pressable
+                style={styles.eliminarFotoButton}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  Alert.alert(
+                    'Eliminar foto',
+                    '¿Estás seguro de que deseas eliminar esta foto?',
+                    [
+                      {
+                        text: 'Cancelar',
+                        style: 'cancel',
+                      },
+                      {
+                        text: 'Eliminar',
+                        style: 'destructive',
+                        onPress: () => {
+                          setFotoHijo(null);
+                          AsyncStorage.removeItem('nuevoHijoFoto');
+                        },
+                      },
+                    ]
+                  );
+                }}
+              >
+                <Ionicons name="close-circle" size={24} color="#d32f2f" />
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.fotoPlaceholder}>
+              <Ionicons name="camera" size={48} color="#127067" />
+              <Text style={styles.fotoPlaceholderText}>Foto del hijo</Text>
+            </View>
+          )}
+        </Pressable>
+      </View>
+
       <ScrollView 
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
@@ -294,25 +491,36 @@ export default function AgregarInformeHijoScreen() {
             />
           </View>
 
-          <View style={styles.row}>
-            <View style={[styles.inputGroup, styles.halfWidth]}>
-              <Text style={styles.label}>No. Afiliación</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Número de afiliación"
-                value={fichaMedica.noAfiliacion}
-                onChangeText={(text) => actualizarCampo('noAfiliacion', text)}
-                keyboardType="numeric"
-              />
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Seguro complementario</Text>
+            <View style={styles.pickerContainer}>
+              <Picker
+                selectedValue={fichaMedica.noAfiliacion}
+                onValueChange={(valor) => actualizarCampo('noAfiliacion', valor)}
+                style={styles.picker}
+                itemStyle={Platform.OS === 'ios' ? styles.pickerItem : undefined}
+              >
+                <Picker.Item label="Seleccionar seguro" value="" color="#999" />
+                <Picker.Item label="Fonsa" value="Fonsa" />
+                <Picker.Item label="Isapre" value="Isapre" />
+              </Picker>
             </View>
-            <View style={[styles.inputGroup, styles.halfWidth]}>
-              <Text style={styles.label}>Nacionalidad</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Nacionalidad"
-                value={fichaMedica.nacionalidad}
-                onChangeText={(text) => actualizarCampo('nacionalidad', text)}
-              />
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Nacionalidad</Text>
+            <View style={styles.pickerContainer}>
+              <Picker
+                selectedValue={fichaMedica.nacionalidad}
+                onValueChange={(valor) => actualizarCampo('nacionalidad', valor)}
+                style={styles.picker}
+                itemStyle={Platform.OS === 'ios' ? styles.pickerItem : undefined}
+              >
+                <Picker.Item label="Seleccionar nacionalidad" value="" color="#999" />
+                {PAISES_LATINOAMERICANOS.map((pais) => (
+                  <Picker.Item key={pais} label={pais} value={pais} />
+                ))}
+              </Picker>
             </View>
           </View>
 
@@ -335,8 +543,8 @@ export default function AgregarInformeHijoScreen() {
           </View>
 
           <View style={styles.row}>
-            <View style={[styles.inputGroup, styles.halfWidth]}>
-              <Text style={styles.label}>Fecha de Nacimiento (dd/mm/yyyy)</Text>
+            <View style={[styles.inputGroup, styles.halfWidth, styles.firstHalfWidth]}>
+              <Text style={styles.label}>Fecha de Nacimiento</Text>
               <TextInput
                 style={styles.input}
                 placeholder="dd/mm/yyyy"
@@ -367,7 +575,7 @@ export default function AgregarInformeHijoScreen() {
           </View>
 
           <View style={styles.row}>
-            <View style={[styles.inputGroup, styles.halfWidth]}>
+            <View style={[styles.inputGroup, styles.halfWidth, styles.firstHalfWidth]}>
               <Text style={styles.label}>Código Postal</Text>
               <TextInput
                 style={styles.input}
@@ -389,7 +597,7 @@ export default function AgregarInformeHijoScreen() {
           </View>
 
           <View style={styles.row}>
-            <View style={[styles.inputGroup, styles.halfWidth]}>
+            <View style={[styles.inputGroup, styles.halfWidth, styles.firstHalfWidth]}>
               <Text style={styles.label}>Teléfono (Casa)</Text>
               <TextInput
                 style={styles.input}
@@ -439,7 +647,7 @@ export default function AgregarInformeHijoScreen() {
             />
           </View>
           <View style={styles.row}>
-            <View style={[styles.inputGroup, styles.halfWidth]}>
+            <View style={[styles.inputGroup, styles.halfWidth, styles.firstHalfWidth]}>
               <Text style={styles.label}>Teléfono</Text>
               <TextInput
                 style={styles.input}
@@ -471,7 +679,7 @@ export default function AgregarInformeHijoScreen() {
             />
           </View>
           <View style={styles.row}>
-            <View style={[styles.inputGroup, styles.halfWidth]}>
+            <View style={[styles.inputGroup, styles.halfWidth, styles.firstHalfWidth]}>
               <Text style={styles.label}>Teléfono</Text>
               <TextInput
                 style={styles.input}
@@ -498,7 +706,7 @@ export default function AgregarInformeHijoScreen() {
           <Text style={styles.sectionTitle}>Información Médica</Text>
           
           <View style={styles.row}>
-            <View style={[styles.inputGroup, styles.halfWidth]}>
+            <View style={[styles.inputGroup, styles.halfWidth, styles.firstHalfWidth]}>
               <Text style={styles.label}>Grupo Sanguíneo</Text>
               <TextInput
                 style={styles.input}
@@ -892,6 +1100,56 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     paddingHorizontal: 20,
   },
+  fotoContainer: {
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingHorizontal: 20,
+  },
+  fotoButton: {
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    overflow: 'hidden',
+    backgroundColor: '#F5F7F8',
+    borderWidth: 2,
+    borderColor: '#127067',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fotoButtonActive: {
+    borderStyle: 'solid',
+  },
+  fotoPreviewContainer: {
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+  },
+  fotoPreview: {
+    width: '100%',
+    height: '100%',
+  },
+  eliminarFotoButton: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 12,
+    padding: 2,
+    zIndex: 10,
+  },
+  fotoPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 10,
+  },
+  fotoPlaceholderText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#127067',
+    marginTop: 8,
+    textAlign: 'center',
+  },
   scrollView: {
     flex: 1,
   },
@@ -941,6 +1199,22 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 16,
     backgroundColor: '#F5F7F8',
+    minHeight: 48,
+  },
+  pickerContainer: {
+    borderWidth: 1,
+    borderColor: '#127067',
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#F5F7F8',
+    minHeight: 48, // Misma altura que los inputs
+  },
+  picker: {
+    width: '100%',
+    height: Platform.OS === 'ios' ? 150 : 48,
+  },
+  pickerItem: {
+    fontSize: 16,
   },
   textArea: {
     minHeight: 100,
@@ -949,10 +1223,14 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 10,
+    alignItems: 'flex-start', // Alinea los campos desde arriba
   },
   halfWidth: {
     flex: 1,
+    minWidth: 0, // Asegura que flex funcione correctamente
+  },
+  firstHalfWidth: {
+    marginRight: 12, // Espaciado consistente entre campos en fila
   },
   radioGroup: {
     flexDirection: 'row',

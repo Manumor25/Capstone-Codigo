@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -41,6 +41,7 @@ export default function ChatValidacion() {
   const [datosApoderado, setDatosApoderado] = useState<any | null>(null);
   const [autorizado, setAutorizado] = useState(false);
   const [cargandoAuth, setCargandoAuth] = useState(true);
+  const redireccionProgramada = useRef(false);
 
   const idPostulacion = params.idPostulacion as string;
   const esChatUrgencia = postulacion?.tipo === 'urgencia';
@@ -134,6 +135,34 @@ export default function ChatValidacion() {
             .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as any) }))
             .sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
           setMensajes(lista);
+          
+          // Detectar si hay un mensaje del sistema indicando que la postulación fue aprobada
+          // y el usuario es apoderado, entonces redirigir a la página principal
+          // Solo redirigir una vez para evitar múltiples redirecciones
+          if (!redireccionProgramada.current && rol === 'apoderado') {
+            const mensajeAprobacion = lista.find((msg) => {
+              if (msg.emisor !== 'Sistema' || !msg.texto) return false;
+              
+              const textoLower = msg.texto.toLowerCase();
+              // Buscar varias variaciones del mensaje de aprobación
+              return (
+                textoLower.includes('aprobada') || 
+                textoLower.includes('aprobado') ||
+                textoLower.includes('ha sido aprob') ||
+                (textoLower.includes('postulaci') && textoLower.includes('aprob')) ||
+                (textoLower.includes('postulaci??n') && textoLower.includes('aprob')) // Para manejar problemas de codificación
+              );
+            });
+            
+            if (mensajeAprobacion) {
+              redireccionProgramada.current = true;
+              console.log('✅ Postulación aprobada detectada, redirigiendo a página principal en 2.5 segundos...');
+              // Esperar 2.5 segundos para que el usuario vea el mensaje antes de redirigir
+              setTimeout(() => {
+                router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
+              }, 2500);
+            }
+          }
         });
       } else {
         setCargandoAuth(false);
@@ -267,7 +296,7 @@ export default function ChatValidacion() {
     }
     try {
       if (!postulacion) {
-        Alert.alert('Error', 'No se encontraron los datos de la postulaci??n.');
+        Alert.alert('Error', 'No se encontraron los datos de la postulación.');
         return;
       }
 
@@ -307,7 +336,7 @@ export default function ChatValidacion() {
         : '';
 
       if (!rutApoderado || !rutHijo) {
-        Alert.alert('Error', 'Faltan datos del apoderado o del hijo para completar la aceptaci??n.');
+        Alert.alert('Error', 'Faltan datos del apoderado o del hijo para completar la aceptación.');
         return;
       }
 
@@ -356,7 +385,7 @@ export default function ChatValidacion() {
 
       await addDoc(collection(db, 'MensajesChat'), {
         idPostulacion,
-        texto: 'La postulaci??n ha sido aprobada.',
+        texto: 'La postulación ha sido aprobada.',
         emisor: 'Sistema',
         receptor: rutReceptor || rutUsuario,
         participantes: participantesChat,
@@ -370,7 +399,7 @@ export default function ChatValidacion() {
         fechaAceptacion: fechaISO,
       });
 
-      Alert.alert('Postulaci??n aprobada');
+      Alert.alert('Postulación aprobada');
       router.back();
     } catch (error) {
       console.error('Error al aceptar:', error);

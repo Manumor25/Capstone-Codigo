@@ -180,7 +180,7 @@ export default function VerFichaMedicaScreen() {
             </View>
 
             <View style={styles.tableRow}>
-              <Text style={styles.tableLabel}>No. Afiliación:</Text>
+              <Text style={styles.tableLabel}>Seguro complementario de salud:</Text>
               <Text style={styles.tableValue}>{fichaMedica.noAfiliacion || 'N/A'}</Text>
             </View>
 

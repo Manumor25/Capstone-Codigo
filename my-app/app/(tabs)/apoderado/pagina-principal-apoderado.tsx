@@ -4,8 +4,8 @@ import { makeShadow } from '@/utils/shadow';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Link, useRouter } from 'expo-router';
-import { collection, getDocs, limit, orderBy, query, where, onSnapshot, Unsubscribe } from 'firebase/firestore';
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { collection, getDocs, limit, orderBy, query, where, onSnapshot, Unsubscribe, deleteDoc, doc, getDoc } from 'firebase/firestore';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
@@ -15,7 +15,9 @@ import {
   StyleSheet,
   Text,
   TouchableHighlight,
-  View
+  View,
+  Animated,
+  Dimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import Checkbox from 'expo-checkbox';
@@ -65,6 +67,10 @@ export default function PaginaPrincipal() {
   const [tieneInscripcion, setTieneInscripcion] = useState<boolean>(false);
   const [cargandoInscripcion, setCargandoInscripcion] = useState<boolean>(true);
   const [alertasBorradas, setAlertasBorradas] = useState<string[]>([]);
+  const [notificacionesPopUp, setNotificacionesPopUp] = useState<Array<{ id: string; alerta: Alerta; animacion: Animated.Value }>>([]);
+  const alertasMostradasEnPopUpRef = useRef<Set<string>>(new Set());
+  const tiempoCargaInicialRef = useRef<number | null>(null);
+  const alertasInicialesRef = useRef<Set<string>>(new Set());
   useSyncRutActivo();
 
   useEffect(() => {
@@ -206,6 +212,74 @@ export default function PaginaPrincipal() {
     return rut.replace(/[^0-9kK]/g, '').toUpperCase();
   };
 
+  // Función para mostrar notificación pop-up (llamada cuando se detecta una nueva alerta)
+  const mostrarNotificacionPopUp = useCallback((alerta: Alerta) => {
+    if (!tieneInscripcion) {
+      console.log('⚠ No se muestra pop-up: usuario no tiene inscripción activa');
+      return;
+    }
+    
+    // Verificar que no se haya mostrado ya
+    if (alertasMostradasEnPopUpRef.current.has(alerta.id)) {
+      console.log('⚠ Alerta ya mostrada como pop-up:', alerta.id);
+      return;
+    }
+
+    console.log('🔔 Mostrando notificación pop-up para alerta:', alerta.id, alerta.tipo);
+
+    // Marcar como mostrada
+    alertasMostradasEnPopUpRef.current.add(alerta.id);
+
+    setNotificacionesPopUp((prev) => {
+      // Verificar que no excedamos el límite de 3
+      if (prev.length >= 3) {
+        console.log('⚠ Límite de pop-ups alcanzado (3)');
+        return prev;
+      }
+
+      const animacion = new Animated.Value(0);
+      const nuevaNotificacion = {
+        id: alerta.id,
+        alerta,
+        animacion,
+      };
+
+      // Animar la entrada
+      Animated.spring(animacion, {
+        toValue: 1,
+        useNativeDriver: true,
+        tension: 50,
+        friction: 7,
+      }).start();
+
+      // Auto-cerrar después de 5 segundos
+      setTimeout(() => {
+        cerrarNotificacionPopUp(alerta.id);
+      }, 5000);
+
+      return [...prev, nuevaNotificacion];
+    });
+  }, [tieneInscripcion]);
+
+  const cerrarNotificacionPopUp = useCallback((id: string) => {
+    setNotificacionesPopUp((prev) => {
+      const notificacion = prev.find((n) => n.id === id);
+      if (!notificacion) return prev;
+
+      // Animar la salida
+      Animated.timing(notificacion.animacion, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }).start(() => {
+        // Eliminar después de la animación
+        setNotificacionesPopUp((prevState) => prevState.filter((n) => n.id !== id));
+      });
+
+      return prev.filter((n) => n.id !== id);
+    });
+  }, []);
+
   // Listener en tiempo real para alertas
   useEffect(() => {
     if (!rutUsuario) {
@@ -222,6 +296,12 @@ export default function PaginaPrincipal() {
     console.log('RUT usuario (normalizado/trim):', rutNormalizado);
     console.log('RUT usuario (sin formato):', rutSinFormato);
     console.log('Patentes asignadas:', patentesAsignadas);
+    
+    // Resetear alertas iniciales cuando cambia el usuario o se recarga la página
+    // Esto asegura que solo se muestren pop-ups para alertas realmente nuevas
+    alertasInicialesRef.current.clear();
+    alertasMostradasEnPopUpRef.current.clear();
+    console.log('🔄 Alertas iniciales reseteadas - solo se mostrarán pop-ups para alertas nuevas');
 
     const alertasRef = collection(db, 'Alertas');
     let alertasQuery;
@@ -392,11 +472,47 @@ export default function PaginaPrincipal() {
       return alertasOrdenadas;
     };
 
+    // Marcar el tiempo de carga inicial (solo la primera vez)
+    if (tiempoCargaInicialRef.current === null) {
+      tiempoCargaInicialRef.current = Date.now();
+      console.log('⏰ Tiempo de carga inicial marcado:', new Date(tiempoCargaInicialRef.current).toISOString());
+    }
+
     // Usar onSnapshot para actualización en tiempo real
     const unsubscribeAlertas = onSnapshot(
       alertasQuery,
       (snapshot) => {
         const alertasFinales = procesarAlertas(snapshot, 'query principal');
+        
+        // Si es la primera carga, guardar los IDs de las alertas existentes
+        // Estas alertas NO se mostrarán como pop-up
+        if (alertasInicialesRef.current.size === 0 && alertasFinales.length > 0) {
+          alertasFinales.forEach((alerta) => {
+            alertasInicialesRef.current.add(alerta.id);
+            // También marcar como mostradas para evitar pop-ups
+            alertasMostradasEnPopUpRef.current.add(alerta.id);
+          });
+          console.log('📋 Alertas iniciales guardadas:', alertasInicialesRef.current.size, 'alertas (no se mostrarán como pop-up)');
+        }
+        
+        // Detectar alertas nuevas (que no estaban en la carga inicial)
+        // SOLO estas se mostrarán como pop-up
+        if (alertasInicialesRef.current.size > 0) {
+          const nuevasAlertas = alertasFinales.filter(
+            (alerta) => !alertasInicialesRef.current.has(alerta.id)
+          );
+          
+          if (nuevasAlertas.length > 0) {
+            console.log('🆕 Alertas nuevas detectadas (se mostrarán como pop-up):', nuevasAlertas.length);
+            nuevasAlertas.forEach((alerta) => {
+              // Agregar a las alertas iniciales para no mostrarla de nuevo
+              alertasInicialesRef.current.add(alerta.id);
+              // Mostrar como pop-up
+              mostrarNotificacionPopUp(alerta);
+            });
+          }
+        }
+        
         setAlertas(alertasFinales);
       },
       (error) => {
@@ -418,9 +534,35 @@ export default function PaginaPrincipal() {
         queryAlternativo,
         (snapshot) => {
           console.log('📡 Listener alternativo recibido:', snapshot.docs.length, 'alertas totales');
-          // Solo procesar si el listener principal no encontró nada
-          // Esto se maneja automáticamente porque ambos actualizan el mismo estado
           const alertasFinales = procesarAlertas(snapshot, 'query alternativo (todas las alertas)');
+          
+          // Si es la primera carga, guardar los IDs de las alertas existentes
+          if (alertasInicialesRef.current.size === 0 && alertasFinales.length > 0) {
+            alertasFinales.forEach((alerta) => {
+              alertasInicialesRef.current.add(alerta.id);
+              // También marcar como mostradas para evitar pop-ups
+              alertasMostradasEnPopUpRef.current.add(alerta.id);
+            });
+            console.log('📋 Alertas iniciales guardadas (alternativo):', alertasInicialesRef.current.size, 'alertas (no se mostrarán como pop-up)');
+          }
+          
+          // Detectar alertas nuevas (que no estaban en la carga inicial)
+          if (alertasInicialesRef.current.size > 0) {
+            const nuevasAlertas = alertasFinales.filter(
+              (alerta) => !alertasInicialesRef.current.has(alerta.id)
+            );
+            
+            if (nuevasAlertas.length > 0) {
+              console.log('🆕 Alertas nuevas detectadas (alternativo, se mostrarán como pop-up):', nuevasAlertas.length);
+              nuevasAlertas.forEach((alerta) => {
+                // Agregar a las alertas iniciales para no mostrarla de nuevo
+                alertasInicialesRef.current.add(alerta.id);
+                // Mostrar como pop-up
+                mostrarNotificacionPopUp(alerta);
+              });
+            }
+          }
+          
           // Solo actualizar si encontramos alertas que no estaban antes
           if (alertasFinales.length > 0) {
             setAlertas((prev) => {
@@ -454,7 +596,7 @@ export default function PaginaPrincipal() {
         unsubscribeAlternativo();
       }
     };
-  }, [rutUsuario, patentesAsignadas]);
+  }, [rutUsuario, patentesAsignadas, mostrarNotificacionPopUp]);
 
   // Recargar datos cuando la pantalla obtiene el foco (al volver desde otra pantalla)
   useFocusEffect(
@@ -541,6 +683,12 @@ export default function PaginaPrincipal() {
     }).length;
   }, [alertasMostradas, ultimaRevisionAlertas]);
 
+
+  const handleNotificacionPress = (alerta: Alerta) => {
+    cerrarNotificacionPopUp(alerta.id);
+    handleAlertaPress(alerta);
+  };
+
   const toggleAlertas = () => {
     setAlertasVisible((prev) => {
       const next = !prev;
@@ -599,72 +747,6 @@ export default function PaginaPrincipal() {
     }
   };
 
-  const borrarHistorialAlertas = () => {
-    console.log('🔴 Botón de borrar presionado');
-    console.log('Alertas mostradas:', alertasMostradas.length);
-    console.log('Alertas totales:', alertas.length);
-    console.log('Alertas borradas actuales:', alertasBorradas.length);
-    
-    if (alertasMostradas.length === 0) {
-      console.log('⚠ No hay alertas para borrar');
-      return;
-    }
-
-    Alert.alert(
-      'Borrar historial',
-      '¿Estás seguro de que deseas borrar todas las notificaciones?',
-      [
-        {
-          text: 'Cancelar',
-          style: 'cancel',
-          onPress: () => {
-            console.log('❌ Usuario canceló el borrado');
-          },
-        },
-        {
-          text: 'Borrar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              console.log('✅ Usuario confirmó el borrado');
-              
-              // Obtener todas las alertas actuales (no solo las mostradas)
-              const idsBorrados = alertas.map(a => a.id);
-              console.log('📝 IDs a marcar como borrados:', idsBorrados);
-              
-              // Actualizar el estado de alertas borradas usando función de actualización
-              setAlertasBorradas(prev => {
-                // Combinar los IDs previos con los nuevos, eliminando duplicados
-                const nuevoArray = [...new Set([...prev, ...idsBorrados])];
-                console.log('🔄 Actualizando estado de alertas borradas:', {
-                  previas: prev.length,
-                  nuevas: idsBorrados.length,
-                  total: nuevoArray.length,
-                });
-                
-                // Guardar en AsyncStorage para persistencia
-                AsyncStorage.setItem('alertasBorradas', JSON.stringify(nuevoArray)).then(() => {
-                  console.log('💾 Alertas borradas guardadas en AsyncStorage:', nuevoArray.length);
-                }).catch(err => {
-                  console.error('Error al guardar en AsyncStorage:', err);
-                });
-                
-                return nuevoArray;
-              });
-              
-              // Marcar todas las alertas como leídas
-              setUltimaRevisionAlertas(Date.now());
-              console.log('✓ Historial de alertas borrado:', idsBorrados.length, 'alertas');
-            } catch (error) {
-              console.error('✗ Error al borrar historial de alertas:', error);
-              Alert.alert('Error', 'No se pudo borrar el historial de alertas.');
-            }
-          },
-        },
-      ],
-      { cancelable: true }
-    );
-  };
 
   // Si está cargando o no hay inscripción activa, mostrar vista inicial
   if (cargandoInscripcion || !tieneInscripcion) {
@@ -748,6 +830,68 @@ export default function PaginaPrincipal() {
 
   return (
     <View style={styles.container}>
+      {/* Notificaciones Pop-up */}
+      <View style={styles.notificacionesContainer} pointerEvents="box-none">
+        {notificacionesPopUp.map((notificacion, index) => {
+          const esUrgente = notificacion.alerta.tipo.toLowerCase() === 'urgencia';
+          const translateY = notificacion.animacion.interpolate({
+            inputRange: [0, 1],
+            outputRange: [-100, 0],
+          });
+          const opacity = notificacion.animacion;
+
+          return (
+            <Animated.View
+              key={notificacion.id}
+              style={[
+                styles.notificacionPopUp,
+                esUrgente && styles.notificacionUrgente,
+                {
+                  transform: [{ translateY }],
+                  opacity,
+                  top: 100 + index * 90, // Apilar notificaciones
+                  zIndex: 1000 - index,
+                },
+              ]}
+            >
+              <Pressable
+                onPress={() => handleNotificacionPress(notificacion.alerta)}
+                style={styles.notificacionContent}
+              >
+                <View style={styles.notificacionHeader}>
+                  <View style={styles.notificacionIconContainer}>
+                    <Ionicons
+                      name={esUrgente ? 'alert-circle' : 'information-circle'}
+                      size={24}
+                      color={esUrgente ? '#fff' : '#127067'}
+                    />
+                    <Text style={[styles.notificacionTipo, esUrgente && styles.notificacionTipoUrgente]}>
+                      {notificacion.alerta.tipo}
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={() => cerrarNotificacionPopUp(notificacion.id)}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  >
+                    <Ionicons
+                      name="close"
+                      size={20}
+                      color={esUrgente ? '#fff' : '#666'}
+                    />
+                  </Pressable>
+                </View>
+                <Text
+                  style={[styles.notificacionTexto, esUrgente && styles.notificacionTextoUrgente]}
+                  numberOfLines={2}
+                >
+                  {notificacion.alerta.descripcion}
+                </Text>
+              </Pressable>
+            </Animated.View>
+          );
+        })}
+      </View>
+
       {/* Barra verde superior */}
       <View style={styles.greenHeader}>
         <Pressable onPress={() => setMenuVisible(!menuVisible)} style={styles.iconButton}>
@@ -808,15 +952,6 @@ export default function PaginaPrincipal() {
           <View style={styles.alertas}>
             <View style={styles.alertasHeader}>
               <Text style={styles.alertasTitle}>Alertas</Text>
-              {alertasMostradas.length > 0 && (
-                <Pressable
-                  style={styles.borrarButton}
-                  onPress={borrarHistorialAlertas}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  <Ionicons name="trash-outline" size={18} color="#d32f2f" />
-                </Pressable>
-              )}
             </View>
             {alertasMostradas.length === 0 ? (
               <Text style={styles.noAlertasText}>No hay alertas nuevas</Text>
@@ -1206,13 +1341,6 @@ const styles = StyleSheet.create({
     color: '#127067',
     flex: 1,
   },
-  borrarButton: {
-    padding: 6,
-    borderRadius: 6,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#ffebee',
-  },
   noAlertasText: {
     fontSize: 14,
     color: '#999',
@@ -1340,5 +1468,63 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#999',
     fontStyle: 'italic',
+  },
+  notificacionesContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1000,
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  notificacionPopUp: {
+    position: 'absolute',
+    width: Dimensions.get('window').width - 32,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 8,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#127067',
+  },
+  notificacionUrgente: {
+    backgroundColor: '#d32f2f',
+    borderLeftColor: '#a94442',
+  },
+  notificacionContent: {
+    flex: 1,
+  },
+  notificacionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  notificacionIconContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  notificacionTipo: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#127067',
+  },
+  notificacionTipoUrgente: {
+    color: '#fff',
+  },
+  notificacionTexto: {
+    fontSize: 14,
+    color: '#333',
+    lineHeight: 20,
+  },
+  notificacionTextoUrgente: {
+    color: '#fff',
   },
 });
