@@ -71,6 +71,9 @@ export default function PaginaPrincipal() {
   const alertasMostradasEnPopUpRef = useRef<Set<string>>(new Set());
   const tiempoCargaInicialRef = useRef<number | null>(null);
   const alertasInicialesRef = useRef<Set<string>>(new Set());
+  const [ubicacionConductor, setUbicacionConductor] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [rutConductor, setRutConductor] = useState<string>('');
+  const [cargandoUbicacion, setCargandoUbicacion] = useState(true);
   useSyncRutActivo();
 
   useEffect(() => {
@@ -247,6 +250,96 @@ export default function PaginaPrincipal() {
     };
 
     cargarDatos();
+  }, []);
+
+  // Obtener ubicación del conductor en tiempo real
+  useEffect(() => {
+    let unsubscribeUbicacion: (() => void) | null = null;
+
+    const obtenerUbicacionConductor = async () => {
+      try {
+        const rutApoderado = await AsyncStorage.getItem('rutUsuario');
+        if (!rutApoderado) {
+          setCargandoUbicacion(false);
+          return;
+        }
+
+        // 1. Obtener el RUT del conductor desde lista_pasajeros
+        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+        const listaPasajerosQuery = query(
+          listaPasajerosRef,
+          where('rutApoderado', '==', rutApoderado.trim()),
+          limit(1)
+        );
+
+        const listaPasajerosSnap = await getDocs(listaPasajerosQuery);
+
+        if (listaPasajerosSnap.empty) {
+          console.log('No se encontró conductor asignado');
+          setCargandoUbicacion(false);
+          setUbicacionConductor(null);
+          return;
+        }
+
+        const pasajeroData = listaPasajerosSnap.docs[0].data();
+        const rutConductorEncontrado = (pasajeroData.rutConductor || '').toString().trim();
+
+        if (!rutConductorEncontrado) {
+          console.log('No se encontró RUT del conductor');
+          setCargandoUbicacion(false);
+          setUbicacionConductor(null);
+          return;
+        }
+
+        setRutConductor(rutConductorEncontrado);
+
+        // 2. Escuchar cambios en tiempo real de la ubicación del conductor
+        const ubicacionRef = doc(db, 'ubicaciones_conductor', rutConductorEncontrado);
+        
+        unsubscribeUbicacion = onSnapshot(
+          ubicacionRef,
+          (snapshot) => {
+            if (snapshot.exists()) {
+              const data = snapshot.data();
+              if (data.latitude && data.longitude) {
+                setUbicacionConductor({
+                  latitude: data.latitude,
+                  longitude: data.longitude,
+                });
+                console.log('Ubicación del conductor actualizada:', {
+                  latitude: data.latitude,
+                  longitude: data.longitude,
+                });
+              } else {
+                console.log('Ubicación del conductor sin coordenadas válidas');
+                setUbicacionConductor(null);
+              }
+            } else {
+              console.log('No hay ubicación del conductor disponible');
+              setUbicacionConductor(null);
+            }
+            setCargandoUbicacion(false);
+          },
+          (error) => {
+            console.error('Error al obtener ubicación del conductor:', error);
+            setCargandoUbicacion(false);
+            setUbicacionConductor(null);
+          }
+        );
+      } catch (error) {
+        console.error('Error al obtener ubicación del conductor:', error);
+        setCargandoUbicacion(false);
+        setUbicacionConductor(null);
+      }
+    };
+
+    obtenerUbicacionConductor();
+
+    return () => {
+      if (unsubscribeUbicacion) {
+        unsubscribeUbicacion();
+      }
+    };
   }, []);
 
   // Función para normalizar RUT (eliminar puntos y guiones)
@@ -1059,16 +1152,24 @@ export default function PaginaPrincipal() {
 
       {/* Mapa del conductor (DriverMap) */}
       <View style={styles.mapaContainer} pointerEvents={listaHijosVisible ? 'none' : 'auto'}>
-        {/* MapboxDriver: usa Mapbox en web/native. Pasa accessToken o configura via env. */}
-        <MapboxDriver
-          accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
-          simulatedPath={[
-            { latitude: -33.4495, longitude: -70.667 },
-            { latitude: -33.4498, longitude: -70.6665 },
-            { latitude: -33.4502, longitude: -70.6660 },
-            { latitude: -33.4506, longitude: -70.6655 },
-          ]}
-        />
+        {/* MapboxDriver: muestra la ubicación real del conductor en tiempo real */}
+        {cargandoUbicacion ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#127067" />
+            <Text style={styles.loadingText}>Cargando ubicación del conductor...</Text>
+          </View>
+        ) : ubicacionConductor ? (
+          <MapboxDriver
+            accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
+            driverLocation={ubicacionConductor}
+          />
+        ) : (
+          <View style={styles.noUbicacionContainer}>
+            <Text style={styles.noUbicacionText}>
+              No hay conductor asignado o ubicación no disponible
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Panel de horarios de clases */}
@@ -1498,6 +1599,19 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     borderRadius: 15,
+  },
+  noUbicacionContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f5f5f5',
+    minHeight: 300,
+    paddingHorizontal: 20,
+  },
+  noUbicacionText: {
+    fontSize: 14,
+    color: '#999',
+    textAlign: 'center',
   },
   horariosPanel: {
     backgroundColor: '#fff',

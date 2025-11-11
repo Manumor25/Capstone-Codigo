@@ -110,9 +110,20 @@ export default function ListaVehiculosScreen() {
     </View>
   );
 
+  const handleVolver = () => {
+    if (router.canGoBack?.()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/conductor/pagina-principal-conductor');
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
+        <Pressable style={styles.backButton} onPress={handleVolver}>
+          <Ionicons name="arrow-back" size={28} color="#127067" />
+        </Pressable>
         <ActivityIndicator size="large" color="#127067" />
         <Text style={styles.loadingText}>Cargando vehículos...</Text>
       </View>
@@ -122,6 +133,9 @@ export default function ListaVehiculosScreen() {
   if (vehiculos.length === 0) {
     return (
       <View style={styles.emptyContainer}>
+        <Pressable style={styles.backButton} onPress={handleVolver}>
+          <Ionicons name="arrow-back" size={28} color="#127067" />
+        </Pressable>
         <Ionicons name="car-outline" size={60} color="#999" />
         <Text style={styles.emptyText}>No hay vehículos registrados</Text>
       </View>
@@ -130,6 +144,11 @@ export default function ListaVehiculosScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Botón de volver */}
+      <Pressable style={styles.backButton} onPress={handleVolver}>
+        <Ionicons name="arrow-back" size={28} color="#127067" />
+      </Pressable>
+
       <View style={styles.header}>
         <Ionicons name="car-outline" size={32} color="#127067" />
         <Text style={styles.title}>Lista vehículos</Text>
@@ -150,7 +169,14 @@ const styles = StyleSheet.create({
     flex: 1, 
     backgroundColor: '#F5F7F8', 
     paddingHorizontal: 16,
-    paddingTop: 40,
+    paddingTop: 50,
+  },
+  backButton: {
+    position: 'absolute',
+    top: 50,
+    left: 16,
+    zIndex: 10,
+    padding: 8,
   },
   header: {
     flexDirection: 'row',
@@ -158,6 +184,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 20,
     width: '100%',
+    marginTop: 10,
   },
   title: {
     fontSize: 24,

@@ -4,8 +4,9 @@ import { makeShadow } from '@/utils/shadow';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Link, useRouter } from 'expo-router';
-import { collection, getDocs, limit, onSnapshot, query, where } from 'firebase/firestore';
-import React, { useEffect, useMemo, useState } from 'react';
+import { collection, doc, getDocs, limit, onSnapshot, query, setDoc, where, serverTimestamp } from 'firebase/firestore';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
+import * as Location from 'expo-location';
 import {
   Alert,
   Pressable,
@@ -36,6 +37,8 @@ export default function PaginaPrincipalConductor() {
   const [pasajeros, setPasajeros] = useState<Pasajero[]>([]);
   const [siguienteNino, setSiguienteNino] = useState<Pasajero | null>(null);
   const [rutConductor, setRutConductor] = useState<string>('');
+  const [ubicacionActual, setUbicacionActual] = useState<{ latitude: number; longitude: number } | null>(null);
+  const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
   useSyncRutActivo();
   const router = useRouter();
   const hayAlertasSinRevisar = useMemo(() => {
@@ -341,6 +344,128 @@ export default function PaginaPrincipalConductor() {
     };
   }, []);
 
+  // Obtener y actualizar ubicación en tiempo real
+  useEffect(() => {
+    let isMounted = true;
+    let watchSubscription: Location.LocationSubscription | null = null;
+
+    const obtenerUbicacion = async () => {
+      try {
+        // Pedir permisos de ubicación
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permisos', 'Se requieren permisos de ubicación para mostrar tu ubicación actual.');
+          return;
+        }
+
+        // Obtener ubicación inicial
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+
+        if (isMounted) {
+          const coords = {
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+          };
+          setUbicacionActual(coords);
+
+          // Guardar ubicación en Firestore
+          if (rutConductor) {
+            await guardarUbicacionEnFirestore(coords);
+          }
+        }
+
+        // Observar cambios de ubicación cada 10 segundos
+        watchSubscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 10000, // Actualizar cada 10 segundos
+            distanceInterval: 50, // O actualizar cada 50 metros
+          },
+          async (location) => {
+            if (isMounted) {
+              const coords = {
+                latitude: location.coords.latitude,
+                longitude: location.coords.longitude,
+              };
+              setUbicacionActual(coords);
+
+              // Guardar ubicación en Firestore
+              if (rutConductor) {
+                await guardarUbicacionEnFirestore(coords);
+              }
+            }
+          }
+        );
+
+        locationWatchRef.current = watchSubscription;
+      } catch (error) {
+        console.error('Error al obtener ubicación:', error);
+        // En web, usar geolocation del navegador como fallback
+        if (typeof navigator !== 'undefined' && navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              if (isMounted) {
+                const coords = {
+                  latitude: position.coords.latitude,
+                  longitude: position.coords.longitude,
+                };
+                setUbicacionActual(coords);
+                if (rutConductor) {
+                  guardarUbicacionEnFirestore(coords);
+                }
+              }
+            },
+            (error) => {
+              console.error('Error en geolocation:', error);
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 10000,
+              maximumAge: 0,
+            }
+          );
+        }
+      }
+    };
+
+    const guardarUbicacionEnFirestore = async (coords: { latitude: number; longitude: number }) => {
+      try {
+        if (!rutConductor) return;
+
+        const ubicacionRef = doc(db, 'ubicaciones_conductor', rutConductor);
+        await setDoc(
+          ubicacionRef,
+          {
+            rutConductor: rutConductor,
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            actualizadoEn: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        console.log('Ubicación guardada en Firestore:', coords);
+      } catch (error) {
+        console.error('Error al guardar ubicación en Firestore:', error);
+      }
+    };
+
+    if (rutConductor) {
+      obtenerUbicacion();
+    }
+
+    return () => {
+      isMounted = false;
+      if (watchSubscription) {
+        watchSubscription.remove();
+      }
+      if (locationWatchRef.current) {
+        locationWatchRef.current.remove();
+      }
+    };
+  }, [rutConductor]);
+
   const handleGenerarRuta = () => {
     Alert.alert('Generar Ruta', 'Función de generar ruta en desarrollo');
   };
@@ -491,12 +616,7 @@ export default function PaginaPrincipalConductor() {
       <View style={styles.mapaContainer}>
         <MapboxDriver
           accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
-          simulatedPath={[
-            { latitude: -33.4495, longitude: -70.667 },
-            { latitude: -33.4498, longitude: -70.6665 },
-            { latitude: -33.4502, longitude: -70.6660 },
-            { latitude: -33.4506, longitude: -70.6655 },
-          ]}
+          driverLocation={ubicacionActual || undefined}
         />
       </View>
 
