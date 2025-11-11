@@ -74,6 +74,7 @@ export default function PaginaPrincipal() {
   const [ubicacionConductor, setUbicacionConductor] = useState<{ latitude: number; longitude: number } | null>(null);
   const [rutConductor, setRutConductor] = useState<string>('');
   const [cargandoUbicacion, setCargandoUbicacion] = useState(true);
+  const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0);
   useSyncRutActivo();
 
   useEffect(() => {
@@ -338,6 +339,98 @@ export default function PaginaPrincipal() {
     return () => {
       if (unsubscribeUbicacion) {
         unsubscribeUbicacion();
+      }
+    };
+  }, []);
+
+  // Listener para contar mensajes no leídos
+  useEffect(() => {
+    let unsubscribeMensajes: (() => void) | null = null;
+
+    const contarMensajesNoLeidos = async () => {
+      try {
+        const rut = await AsyncStorage.getItem('rutUsuario');
+        if (!rut) return;
+
+        // Obtener todos los chats del apoderado desde lista_pasajeros
+        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+        const q = query(listaPasajerosRef, where('rutApoderado', '==', rut));
+        const snapshot = await getDocs(q);
+
+        let totalNoLeidos = 0;
+        const chatsIds = new Set<string>();
+
+        // Recopilar todos los idPostulacion y chatIds
+        for (const docSnap of snapshot.docs) {
+          const data = docSnap.data();
+          if (data.idPostulacion) {
+            chatsIds.add(`post_${data.idPostulacion}`);
+          }
+          if (data.rutHijo && data.rutConductor) {
+            const chatId = `agregar_hijo_${data.rutHijo}_${rut}_${data.rutConductor}`;
+            chatsIds.add(`chat_${chatId}`);
+          }
+        }
+
+        // Contar mensajes no leídos en cada chat
+        const mensajesRef = collection(db, 'MensajesChat');
+        for (const chatKey of chatsIds) {
+          let qMensajes;
+          
+          if (chatKey.startsWith('post_')) {
+            const idPostulacion = chatKey.replace('post_', '');
+            qMensajes = query(mensajesRef, where('idPostulacion', '==', idPostulacion));
+          } else {
+            const chatId = chatKey.replace('chat_', '');
+            qMensajes = query(mensajesRef, where('chatId', '==', chatId));
+          }
+
+          const mensajesSnap = await getDocs(qMensajes);
+          mensajesSnap.docs.forEach((docSnap) => {
+            const msgData = docSnap.data();
+            // Contar mensajes no leídos donde el receptor es el apoderado
+            if (msgData.receptor === rut && 
+                msgData.emisor !== rut && 
+                msgData.emisor !== 'Sistema' &&
+                (!msgData.leido || msgData.leido === false)) {
+              totalNoLeidos++;
+            }
+          });
+        }
+
+        setMensajesNoLeidos(totalNoLeidos);
+      } catch (error) {
+        console.error('Error al contar mensajes no leídos:', error);
+      }
+    };
+
+    contarMensajesNoLeidos();
+
+    // Listener en tiempo real para mensajes
+    const setupListener = async () => {
+      try {
+        const rut = await AsyncStorage.getItem('rutUsuario');
+        if (!rut) return;
+
+        // Escuchar todos los mensajes donde el receptor es el apoderado
+        const mensajesRef = collection(db, 'MensajesChat');
+        const q = query(mensajesRef, where('receptor', '==', rut));
+        
+        unsubscribeMensajes = onSnapshot(q, () => {
+          contarMensajesNoLeidos();
+        }, (error) => {
+          console.error('Error en listener de mensajes:', error);
+        });
+      } catch (error) {
+        console.error('Error al configurar listener de mensajes:', error);
+      }
+    };
+
+    setupListener();
+
+    return () => {
+      if (unsubscribeMensajes) {
+        unsubscribeMensajes();
       }
     };
   }, []);
@@ -898,7 +991,12 @@ export default function PaginaPrincipal() {
         {/* Barra verde superior */}
         <View style={styles.greenHeader}>
           <Pressable onPress={() => setMenuVisible(!menuVisible)} style={styles.iconButton}>
-            <Ionicons name="menu" size={28} color="#fff" />
+            <View style={styles.iconWrapper}>
+              <Ionicons name="menu" size={28} color="#fff" />
+              {mensajesNoLeidos > 0 && (
+                <View style={styles.notificationDot} />
+              )}
+            </View>
           </Pressable>
           <View style={styles.headerCenter} />
           <Pressable onPress={toggleAlertas} style={styles.iconButton}>
@@ -928,7 +1026,12 @@ export default function PaginaPrincipal() {
             </Link>
             <Link href="/chat-furgon" asChild>
               <TouchableHighlight underlayColor="#127067" style={styles.menuButton}>
-                <Text style={styles.menuButtonText}>Chat de furgon</Text>
+                <View style={styles.menuButtonContent}>
+                  <Text style={styles.menuButtonText}>Chat de furgon</Text>
+                  {mensajesNoLeidos > 0 && (
+                    <View style={styles.chatNotificationDot} />
+                  )}
+                </View>
               </TouchableHighlight>
             </Link>
           </View>
@@ -1038,7 +1141,12 @@ export default function PaginaPrincipal() {
       {/* Barra verde superior */}
       <View style={styles.greenHeader}>
         <Pressable onPress={() => setMenuVisible(!menuVisible)} style={styles.iconButton}>
-          <Ionicons name="menu" size={28} color="#fff" />
+          <View style={styles.iconWrapper}>
+            <Ionicons name="menu" size={28} color="#fff" />
+            {mensajesNoLeidos > 0 && (
+              <View style={styles.notificationDot} />
+            )}
+          </View>
         </Pressable>
         <Pressable
           onPress={() => router.replace('/(tabs)/apoderado/pagina-principal-apoderado')}
@@ -1408,17 +1516,22 @@ const styles = StyleSheet.create({
   iconButton: {
     padding: 8,
   },
+  iconWrapper: {
+    position: 'relative',
+  },
   notificationWrapper: {
     position: 'relative',
   },
   notificationDot: {
     position: 'absolute',
-    top: 0,
-    right: 0,
+    top: 2,
+    right: 2,
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#ff5a5f',
+    backgroundColor: '#FF6B35',
+    borderWidth: 2,
+    borderColor: '#127067',
   },
   notificationBadge: {
     position: 'absolute',
@@ -1522,6 +1635,19 @@ const styles = StyleSheet.create({
     marginVertical: 6,
     backgroundColor: '#127067',
     borderRadius: 20,
+  },
+  menuButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  chatNotificationDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FF6B35',
+    marginLeft: 8,
   },
   menuButtonText: {
     color: '#fff',

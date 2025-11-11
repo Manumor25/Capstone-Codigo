@@ -3,7 +3,7 @@ import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, query, serverTimestamp, setDoc, where, addDoc, limit } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -374,6 +374,29 @@ export default function AgregarInformeHijoScreen() {
       // Normalizar el rutUsuario para guardarlo de forma consistente (sin espacios)
       const rutUsuarioNormalizado = datosHijo.rutUsuario ? datosHijo.rutUsuario.trim() : '';
 
+      // Cargar horario desde AsyncStorage
+      let horarioAsistencia: any[] = [];
+      try {
+        const horarioRaw = await AsyncStorage.getItem('nuevoHijoHorario');
+        if (horarioRaw) {
+          const horarioParsed = JSON.parse(horarioRaw);
+          if (Array.isArray(horarioParsed)) {
+            // Filtrar solo los días que asisten y formatear correctamente
+            horarioAsistencia = horarioParsed
+              .filter((dia: any) => dia.asiste === true)
+              .map((dia: any) => ({
+                id: dia.id || dia.etiqueta?.toLowerCase() || '',
+                etiqueta: dia.etiqueta || dia.id || '',
+                asiste: true,
+                horaEntrada: dia.horaEntrada || '',
+                horaSalida: dia.horaSalida || '',
+              }));
+          }
+        }
+      } catch (error) {
+        console.error('Error al cargar horario:', error);
+      }
+
       const datosCompletos: any = {
         ...datosHijo,
         rutUsuario: rutUsuarioNormalizado, // Normalizar RUT sin espacios
@@ -381,6 +404,7 @@ export default function AgregarInformeHijoScreen() {
           ...fichaMedica,
           fechaGuardado: new Date().toISOString(),
         },
+        horarioAsistencia: horarioAsistencia, // Incluir horario
         actualizadoEn: serverTimestamp(),
       };
 
@@ -397,9 +421,86 @@ export default function AgregarInformeHijoScreen() {
         rutHijo: datosHijo.rut,
         rutUsuario: rutUsuarioNormalizado,
         tieneFoto: !!fotoHijo,
+        tieneHorario: horarioAsistencia.length > 0,
       });
 
       await setDoc(doc(db, 'Hijos', datosHijo.rut), datosCompletos, { merge: true });
+
+      // Verificar si el apoderado ya tiene un hijo inscrito en un furgón
+      try {
+        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+        const listaPasajerosQuery = query(
+          listaPasajerosRef,
+          where('rutApoderado', '==', rutUsuarioNormalizado),
+          limit(1)
+        );
+        const listaPasajerosSnap = await getDocs(listaPasajerosQuery);
+
+        if (!listaPasajerosSnap.empty) {
+          const pasajeroData = listaPasajerosSnap.docs[0].data();
+          const rutConductor = (pasajeroData.rutConductor || '').toString().trim();
+          const patenteFurgon = (pasajeroData.patenteFurgon || '').toString().trim();
+          const nombreHijoExistente = pasajeroData.nombreHijo || '';
+          const idFurgon = pasajeroData.idFurgon || '';
+
+          if (rutConductor && patenteFurgon) {
+            // Normalizar RUT del conductor
+            const normalizarRut = (rut: string): string => {
+              return rut.replace(/[^0-9kK]/g, '').toUpperCase();
+            };
+            const rutConductorNormalizado = normalizarRut(rutConductor);
+
+            // Obtener nombre del apoderado
+            let nombreApoderado = '';
+            try {
+              const usuariosRef = collection(db, 'usuarios');
+              const usuariosQuery = query(usuariosRef, where('rut', '==', rutUsuarioNormalizado), limit(1));
+              const usuariosSnap = await getDocs(usuariosQuery);
+              if (!usuariosSnap.empty) {
+                const usuarioData = usuariosSnap.docs[0].data();
+                nombreApoderado = `${usuarioData.nombres || ''} ${usuarioData.apellidos || ''}`.trim();
+              }
+            } catch (error) {
+              console.error('Error al obtener nombre del apoderado:', error);
+            }
+
+            const nombreNuevoHijo = `${datosHijo.nombres} ${datosHijo.apellidos}`.trim();
+
+            // Crear alerta para el conductor
+            const alertaData = {
+              tipoAlerta: 'AgregarHijo',
+              descripcion: `${nombreApoderado || 'Un apoderado'} quiere agregar a ${nombreNuevoHijo} al furgón ${patenteFurgon}`,
+              rutDestinatario: rutConductorNormalizado,
+              rutDestinatarioOriginal: rutConductor,
+              rutaDestino: '/chat-validacion',
+              parametros: {
+                rutPadre: rutUsuarioNormalizado,
+                rutConductor: rutConductorNormalizado,
+                rutConductorOriginal: rutConductor,
+                rutHijo: datosHijo.rut,
+                patenteFurgon: patenteFurgon,
+                idFurgon: idFurgon,
+                nombreHijo: nombreNuevoHijo,
+                nombreApoderado: nombreApoderado,
+                accion: 'agregar_hijo',
+              },
+              creadoEn: serverTimestamp(),
+              leida: false,
+              patenteFurgon: patenteFurgon,
+            };
+
+            await addDoc(collection(db, 'Alertas'), alertaData);
+            console.log('✅ Alerta creada para el conductor:', {
+              rutConductor: rutConductorNormalizado,
+              patenteFurgon,
+              nombreHijo: nombreNuevoHijo,
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error al verificar inscripción o crear alerta:', error);
+        // Continuar aunque falle la creación de la alerta
+      }
 
       await AsyncStorage.multiRemove(['nuevoHijoData', 'nuevoHijoHorario', 'nuevoHijoFoto']);
 

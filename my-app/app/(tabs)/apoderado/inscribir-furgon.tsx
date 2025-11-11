@@ -3,7 +3,6 @@ import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { makeShadow } from '@/utils/shadow';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Picker } from '@react-native-picker/picker';
 import CryptoJS from 'crypto-js';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -41,8 +40,8 @@ export default function PostularFurgon() {
   };
   const cerrarBloqueo = () => setBloqueoVisible(false);
   const [hijos, setHijos] = useState<Hijo[]>([]);
-  const [hijoSeleccionado, setHijoSeleccionado] = useState('');
-  const [rutHijoSeleccionado, setRutHijoSeleccionado] = useState('');
+  const [hijosSeleccionados, setHijosSeleccionados] = useState<Set<string>>(new Set());
+  const [rutHijosSeleccionados, setRutHijosSeleccionados] = useState<Set<string>>(new Set());
   const [rutUsuario, setRutUsuario] = useState('');
   const [fotoFurgon, setFotoFurgon] = useState<string | null>(null);
   const [cargandoFoto, setCargandoFoto] = useState(false);
@@ -116,21 +115,14 @@ export default function PostularFurgon() {
         });
 
         setHijos(lista);
-        const hijoPorRut = rutHijoPrevio
-          ? lista.find((hijo) => hijo.rut === rutHijoPrevio)
-          : undefined;
-        const hijoPorDefecto =
-          !hijoPorRut && !hijoSeleccionado && lista.length === 1 ? lista[0] : undefined;
-        const hijoInicial = hijoPorRut || hijoPorDefecto;
-
-        if (hijoInicial) {
-          setHijoSeleccionado(hijoInicial.id);
-          setRutHijoSeleccionado(hijoInicial.rut);
-          AsyncStorage.setItem('rutHijoSeleccionado', hijoInicial.rut).catch((error) => {
-            console.error('No se pudo guardar el RUT del hijo seleccionado:', error);
-          });
-        } else if (!rutHijoPrevio) {
-          setRutHijoSeleccionado('');
+        
+        // Si hay un hijo previo, seleccionarlo automáticamente
+        if (rutHijoPrevio) {
+          const hijoPorRut = lista.find((hijo) => hijo.rut === rutHijoPrevio);
+          if (hijoPorRut) {
+            setHijosSeleccionados(new Set([hijoPorRut.id]));
+            setRutHijosSeleccionados(new Set([hijoPorRut.rut]));
+          }
         }
       } catch (error) {
         console.error('Error al cargar hijos:', error);
@@ -277,31 +269,43 @@ export default function PostularFurgon() {
     cargarFotoFurgon();
   }, [furgonIdParam, patenteParam, rutConductorParam]);
 
-  const handleSeleccionHijo = (itemValue: string | number) => {
-    const valorSeleccionado = String(itemValue);
-    setHijoSeleccionado(valorSeleccionado);
-    const hijo = hijos.find((item) => item.id === valorSeleccionado);
-    const rut = hijo?.rut ?? '';
-    setRutHijoSeleccionado(rut);
-    if (rut) {
-      AsyncStorage.setItem('rutHijoSeleccionado', rut).catch((error) => {
-        console.error('No se pudo guardar el RUT del hijo seleccionado:', error);
-      });
-    } else {
-      AsyncStorage.removeItem('rutHijoSeleccionado').catch((error) => {
-        console.error('No se pudo eliminar el RUT del hijo seleccionado:', error);
-      });
-    }
+  const handleToggleHijo = (hijoId: string, rutHijo: string) => {
+    setHijosSeleccionados((prev) => {
+      const nuevo = new Set(prev);
+      if (nuevo.has(hijoId)) {
+        nuevo.delete(hijoId);
+      } else {
+        nuevo.add(hijoId);
+      }
+      return nuevo;
+    });
+    
+    setRutHijosSeleccionados((prev) => {
+      const nuevo = new Set(prev);
+      if (nuevo.has(rutHijo)) {
+        nuevo.delete(rutHijo);
+      } else {
+        nuevo.add(rutHijo);
+      }
+      return nuevo;
+    });
+  };
+  
+  const seleccionarTodos = () => {
+    const todosIds = new Set(hijos.map(h => h.id));
+    const todosRuts = new Set(hijos.map(h => h.rut));
+    setHijosSeleccionados(todosIds);
+    setRutHijosSeleccionados(todosRuts);
+  };
+  
+  const deseleccionarTodos = () => {
+    setHijosSeleccionados(new Set());
+    setRutHijosSeleccionados(new Set());
   };
 
   const postular = async () => {
-    if (!hijoSeleccionado) {
-      Alert.alert('Error', 'Selecciona un hijo para postular.');
-      return;
-    }
-
-    if (!rutHijoSeleccionado) {
-      Alert.alert('Error', 'No se pudo obtener el RUT del hijo seleccionado.');
+    if (hijosSeleccionados.size === 0) {
+      Alert.alert('Error', 'Selecciona al menos un hijo para postular.');
       return;
     }
 
@@ -318,304 +322,172 @@ export default function PostularFurgon() {
         return;
       }
 
+      const nombreApoderado = await obtenerNombreApoderado();
+      const rutConductorNormalizado = normalizarRut(rutConductor);
       const listaPasajerosRef = collection(db, 'lista_pasajeros');
-      const objetivoRut = normalizarRut(rutHijoSeleccionado);
-      const patentesRegistradas = new Set<string>();
-
-      const recolectarCoincidencias = (docs: any[]) => {
-        const coincidencias: any[] = [];
-        docs.forEach((docSnap) => {
-          const data = docSnap.data() || {};
-          const rutDoc = normalizarRut((data.rutHijo || '').toString());
-          if (rutDoc === objetivoRut) {
-            coincidencias.push(docSnap);
-            const patenteAsociada = (data.patenteFurgon || '').toString().trim();
-            if (patenteAsociada) {
-              patentesRegistradas.add(patenteAsociada);
-            }
-          }
-        });
-        return coincidencias;
-      };
-
-      const obtenerCoincidenciasListaPasajeros = async () => {
-        let coincidencias: any[] = [];
+      const postulacionesRef = collection(db, 'Postulaciones');
+      const timestamp = serverTimestamp();
+      
+      // Obtener todos los hijos seleccionados
+      const hijosParaPostular = hijos.filter(h => hijosSeleccionados.has(h.id));
+      const hijosConError: string[] = [];
+      const postulacionesCreadas: string[] = [];
+      
+      // Procesar cada hijo seleccionado
+      for (const hijo of hijosParaPostular) {
+        const rutHijo = hijo.rut;
+        const objetivoRut = normalizarRut(rutHijo);
         
-        // Primero intentar consulta combinada (más eficiente)
-        try {
-          const combinadaSnap = await getDocs(
-            query(
-              listaPasajerosRef,
-              where('rutApoderado', '==', rutUsuario),
-              where('rutHijo', '==', rutHijoSeleccionado),
-            ),
-          );
-          
-          console.log('Consulta combinada encontrada:', combinadaSnap.docs.length, 'registros');
-          
-          // Filtrar solo registros activos (estado 'aceptada' o 'activa', sin fecha de baja)
-          const registrosActivos = combinadaSnap.docs.filter((docSnap) => {
-            const data = docSnap.data() || {};
-            const estado = (data.estado || 'aceptada').toString().toLowerCase();
-            const tieneFechaBaja = !!data.fechaBaja;
-            const estadoDeBaja = estado === 'baja' || estado === 'cancelada';
-            
-            // Solo considerar activos si el estado es 'aceptada' o 'activa' Y no tiene fecha de baja
-            return (estado === 'aceptada' || estado === 'activa') && !tieneFechaBaja && !estadoDeBaja;
-          });
-          
-          console.log('Registros activos encontrados:', registrosActivos.length);
-          
-          coincidencias = recolectarCoincidencias(registrosActivos);
-          if (coincidencias.length > 0) {
-            console.log('Coincidencias activas encontradas:', coincidencias.length);
-            return coincidencias;
-          }
-        } catch (consultaError) {
-          console.warn('Consulta combinada lista_pasajeros falló, se intentará con filtros simples:', consultaError);
-        }
-
-        // Si no hay coincidencias con la consulta combinada, intentar por rutApoderado
+        // Verificar si ya está inscrito en lista_pasajeros
         try {
           const porApoderadoSnap = await getDocs(query(listaPasajerosRef, where('rutApoderado', '==', rutUsuario)));
-          
-          // Filtrar solo registros activos para este hijo
           const registrosActivos = porApoderadoSnap.docs.filter((docSnap) => {
             const data = docSnap.data() || {};
             const rutDoc = normalizarRut((data.rutHijo || '').toString());
             if (rutDoc !== objetivoRut) return false;
-            
             const estado = (data.estado || 'aceptada').toString().toLowerCase();
             const tieneFechaBaja = !!data.fechaBaja;
             const estadoDeBaja = estado === 'baja' || estado === 'cancelada';
-            
-            // Solo considerar activos si el estado es 'aceptada' o 'activa' Y no tiene fecha de baja
             return (estado === 'aceptada' || estado === 'activa') && !tieneFechaBaja && !estadoDeBaja;
           });
           
-          coincidencias = recolectarCoincidencias(registrosActivos);
-          if (coincidencias.length > 0) {
-            console.log('Coincidencias activas encontradas por rutApoderado:', coincidencias.length);
-            return coincidencias;
+          if (registrosActivos.length > 0) {
+            hijosConError.push(`${hijo.nombres} ${hijo.apellidos}`);
+            continue;
           }
-        } catch (errorApoderado) {
-          console.warn('Consulta por rutApoderado falló, se intentará con rutHijo:', errorApoderado);
+        } catch (error) {
+          console.warn('Error al verificar lista_pasajeros para', hijo.nombres, error);
         }
-
-        // Último intento: por rutHijo
+        
+        // Verificar si ya tiene postulación aceptada
         try {
-          const porRutSnap = await getDocs(query(listaPasajerosRef, where('rutHijo', '==', rutHijoSeleccionado)));
-          
-          // Filtrar solo registros activos para este apoderado
-          const registrosActivos = porRutSnap.docs.filter((docSnap) => {
+          const postulacionesSnap = await getDocs(query(postulacionesRef, where('rutHijo', '==', rutHijo)));
+          const postulacionesAceptadas = postulacionesSnap.docs.filter((docSnap) => {
             const data = docSnap.data() || {};
-            const rutDocApoderado = normalizarRut((data.rutApoderado || '').toString());
-            const rutDocUsuario = normalizarRut(rutUsuario);
-            if (rutDocApoderado !== rutDocUsuario) return false;
-            
-            const estado = (data.estado || 'aceptada').toString().toLowerCase();
-            const tieneFechaBaja = !!data.fechaBaja;
-            const estadoDeBaja = estado === 'baja' || estado === 'cancelada';
-            
-            // Solo considerar activos si el estado es 'aceptada' o 'activa' Y no tiene fecha de baja
-            return (estado === 'aceptada' || estado === 'activa') && !tieneFechaBaja && !estadoDeBaja;
+            const estado = (data.estado || '').toString().toLowerCase();
+            const rutDoc = normalizarRut((data.rutHijo || '').toString());
+            const rutUsuarioDoc = normalizarRut((data.rutUsuario || '').toString());
+            const rutUsuarioNormalizado = normalizarRut(rutUsuario);
+            return estado === 'aceptada' && 
+                   estado !== 'baja' && 
+                   estado !== 'cancelada' && 
+                   rutDoc === objetivoRut && 
+                   rutUsuarioDoc === rutUsuarioNormalizado && 
+                   !data.fechaBaja;
           });
           
-          coincidencias = recolectarCoincidencias(registrosActivos);
-          if (coincidencias.length > 0) {
-            console.log('Coincidencias activas encontradas por rutHijo:', coincidencias.length);
-            return coincidencias;
+          if (postulacionesAceptadas.length > 0) {
+            hijosConError.push(`${hijo.nombres} ${hijo.apellidos}`);
+            continue;
           }
-        } catch (errorRut) {
-          console.warn('Consulta por rutHijo falló:', errorRut);
+        } catch (error) {
+          console.warn('Error al verificar postulaciones para', hijo.nombres, error);
         }
-
-        console.log('No se encontraron inscripciones activas para este hijo');
-        return [];
-      };
-
-      const coincidenciasLista = await obtenerCoincidenciasListaPasajeros();
-      console.log('Resultado de validación lista_pasajeros:', {
-        coincidencias: coincidenciasLista.length,
-        patentes: Array.from(patentesRegistradas),
-        rutHijo: rutHijoSeleccionado,
-        rutUsuario,
-      });
-      
-      // Solo bloquear si hay coincidencias activas Y pertenecen al mismo apoderado
-      if (coincidenciasLista.length > 0) {
-        // Verificar que todas las coincidencias pertenecen al mismo apoderado
-        const rutUsuarioNormalizado = normalizarRut(rutUsuario);
-        const coincidenciasValidas = coincidenciasLista.filter((docSnap) => {
-          const data = docSnap.data() || {};
-          const rutApoderadoDoc = (data.rutApoderado || '').toString().trim();
-          const rutApoderadoNormalizado = normalizarRut(rutApoderadoDoc);
+        
+        // Crear postulación para este hijo
+        try {
+          const postulacionDoc = await addDoc(postulacionesRef, {
+            rutUsuario,
+            rutConductor,
+            rutHijo,
+            idHijo: hijo.id,
+            idFurgon: furgonIdParam || '',
+            patenteFurgon,
+            colegio: (params.colegio as string) || '',
+            nombreFurgon: (params.nombre as string) || '',
+            comuna: (params.comuna as string) || '',
+            estado: 'pendiente',
+            creadoEn: timestamp,
+          });
           
-          // Verificar que el RUT del apoderado coincide (original o normalizado)
-          return (
-            rutApoderadoDoc === rutUsuario ||
-            rutApoderadoNormalizado === rutUsuarioNormalizado
-          );
-        });
-        
-        console.log('Coincidencias válidas (mismo apoderado):', {
-          total: coincidenciasLista.length,
-          validas: coincidenciasValidas.length,
-        });
-        
-        if (coincidenciasValidas.length > 0) {
-          const detallePatentes = Array.from(patentesRegistradas).join(', ');
-          const mensajeExtra = detallePatentes.length > 0 ? ` Actualmente figura en: ${detallePatentes}.` : '';
-          console.log('⚠️ Bloqueando postulación: Hijo ya inscrito activamente en lista_pasajeros');
-          console.log('Detalles de coincidencias válidas:', coincidenciasValidas.map(c => ({
-            id: c.id,
-            estado: c.data()?.estado,
-            fechaBaja: c.data()?.fechaBaja,
-            patente: c.data()?.patenteFurgon,
-            rutApoderado: c.data()?.rutApoderado,
-          })));
-          mostrarBloqueo(
-            `Este hijo ya esta inscrito en un furgon.${mensajeExtra} Comunicate con el tio del furgon para salirse antes de intentar una nueva postulacion.`,
-          );
-          return;
-        } else {
-          console.log('⚠️ Coincidencias encontradas pero no pertenecen al mismo apoderado, permitiendo postulación');
+          postulacionesCreadas.push(postulacionDoc.id);
+          
+          // Crear mensaje inicial en el chat solo para el primer hijo
+          if (postulacionesCreadas.length === 1) {
+            const mensajeInicial = hijosParaPostular.length === 1
+              ? `Hola, me gustaría inscribir a mi hijo ${hijo.nombres} en tu furgón.`
+              : `Hola, me gustaría inscribir a ${hijosParaPostular.length} hijos en tu furgón.`;
+            
+            const participantesChat = [rutUsuario, rutConductor].filter(Boolean);
+            
+            try {
+              await addDoc(collection(db, 'MensajesChat'), {
+                idPostulacion: postulacionDoc.id,
+                texto: mensajeInicial,
+                emisor: rutUsuario,
+                receptor: rutConductor,
+                participantes: participantesChat,
+                fecha: new Date().toISOString(),
+                creadoEn: serverTimestamp(),
+              });
+            } catch (errorMensaje) {
+              console.error('Error al crear mensaje inicial:', errorMensaje);
+            }
+          }
+          
+          // Crear alerta solo para el primer hijo
+          if (postulacionesCreadas.length === 1) {
+            const descripcion = hijosParaPostular.length === 1
+              ? (nombreApoderado || 'Un apoderado') + ' esta postulando a tu furgon'
+              : (nombreApoderado || 'Un apoderado') + ` esta postulando ${hijosParaPostular.length} hijos a tu furgon`;
+            
+            const alertaData = {
+              tipoAlerta: 'Postulacion',
+              descripcion,
+              rutDestinatario: rutConductorNormalizado,
+              rutDestinatarioOriginal: rutConductor,
+              rutaDestino: '/chat-validacion',
+              parametros: {
+                idPostulacion: postulacionDoc.id,
+                rutPadre: rutUsuario,
+                rutConductor: rutConductorNormalizado,
+                rutConductorOriginal: rutConductor,
+                rutHijo,
+                patenteFurgon,
+              },
+              creadoEn: serverTimestamp(),
+              leida: false,
+              patenteFurgon,
+            };
+            
+            await addDoc(collection(db, 'Alertas'), alertaData);
+          }
+        } catch (error) {
+          console.error('Error al crear postulación para', hijo.nombres, error);
+          hijosConError.push(`${hijo.nombres} ${hijo.apellidos}`);
         }
       }
       
-      console.log('No hay inscripciones activas, permitiendo postulación');
-
-      const postulacionesRef = collection(db, 'Postulaciones');
-      let postulacionesAceptadasSnap;
-      try {
-        postulacionesAceptadasSnap = await getDocs(
-          query(
-            postulacionesRef,
-            where('rutHijo', '==', rutHijoSeleccionado),
-            where('estado', '==', 'aceptada'),
-          ),
-        );
-      } catch (errorConsultaPostulaciones) {
-        console.warn('Consulta combinada Postulaciones falló, se usará búsqueda por rutHijo:', errorConsultaPostulaciones);
-        postulacionesAceptadasSnap = await getDocs(query(postulacionesRef, where('rutHijo', '==', rutHijoSeleccionado)));
-      }
-
-      // Filtrar solo postulaciones aceptadas que NO estén en estado 'baja' o 'cancelada'
-      const postulacionesAceptadas = postulacionesAceptadasSnap.docs.filter((docSnap) => {
-        const data = docSnap.data() || {};
-        const estado = (data.estado || '').toString().toLowerCase();
-        const rutDoc = normalizarRut((data.rutHijo || '').toString());
-        const rutUsuarioDoc = normalizarRut((data.rutUsuario || '').toString());
-        const rutUsuarioNormalizado = normalizarRut(rutUsuario);
-        
-        // Solo considerar postulaciones aceptadas que NO estén dadas de baja
-        // Y que pertenezcan al mismo apoderado
-        const esAceptada = estado === 'aceptada';
-        const noEstaDeBaja = estado !== 'baja' && estado !== 'cancelada';
-        const coincideRut = rutDoc === objetivoRut;
-        const coincideApoderado = rutUsuarioDoc === rutUsuarioNormalizado;
-        const noTieneFechaBaja = !data.fechaBaja;
-        
-        return esAceptada && noEstaDeBaja && coincideRut && coincideApoderado && noTieneFechaBaja;
-      });
-
-      console.log('Resultado de validación Postulaciones:', {
-        postulacionesAceptadas: postulacionesAceptadas.length,
-        rutHijo: rutHijoSeleccionado,
-        rutUsuario,
-      });
-
-      if (postulacionesAceptadas.length > 0) {
-        console.log('⚠️ Bloqueando postulación: Hay postulaciones aceptadas activas');
-        console.log('Detalles de postulaciones aceptadas:', postulacionesAceptadas.map(p => ({
-          id: p.id,
-          estado: p.data()?.estado,
-          fechaBaja: p.data()?.fechaBaja,
-          patente: p.data()?.patenteFurgon,
-        })));
-        mostrarBloqueo(
-          'Este hijo ya esta inscrito en un furgon. Comunicate con el tio del furgon para salirse antes de intentar una nueva postulacion.',
+      // Mostrar resultado
+      if (hijosConError.length > 0 && postulacionesCreadas.length === 0) {
+        Alert.alert(
+          'Error',
+          `No se pudieron crear postulaciones para: ${hijosConError.join(', ')}. Ya están inscritos en un furgón.`
         );
         return;
       }
-
-      const timestamp = serverTimestamp();
-      const postulacionDoc = await addDoc(collection(db, 'Postulaciones'), {
-        rutUsuario,
-        rutConductor,
-        rutHijo: rutHijoSeleccionado,
-        idHijo: hijoSeleccionado,
-        idFurgon: furgonIdParam || '',
-        patenteFurgon,
-        colegio: (params.colegio as string) || '',
-        nombreFurgon: (params.nombre as string) || '',
-        comuna: (params.comuna as string) || '',
-        estado: 'pendiente',
-        creadoEn: timestamp,
-      });
-
-      const nombreApoderado = await obtenerNombreApoderado();
       
-      // Normalizar el RUT del conductor para que coincida con la búsqueda
-      const rutConductorNormalizado = normalizarRut(rutConductor);
-      
-      console.log('Creando alerta de postulación:');
-      console.log('- RUT Conductor (original):', rutConductor);
-      console.log('- RUT Conductor (normalizado):', rutConductorNormalizado);
-      console.log('- Patente Furgón:', patenteFurgon);
-      console.log('- ID Postulación:', postulacionDoc.id);
-      console.log('- Nombre Apoderado:', nombreApoderado);
-      
-      // Crear mensaje inicial en el chat
-      const mensajeInicial = `Hola, me gustaría inscribir a mi hijo ${hijos.find(h => h.id === hijoSeleccionado)?.nombres || ''} en tu furgón.`;
-      
-      const participantesChat = [rutUsuario, rutConductor].filter(Boolean);
-      
-      // Crear mensaje inicial en el chat
-      try {
-        await addDoc(collection(db, 'MensajesChat'), {
-          idPostulacion: postulacionDoc.id,
-          texto: mensajeInicial,
-          emisor: rutUsuario,
-          receptor: rutConductor,
-          participantes: participantesChat,
-          fecha: new Date().toISOString(),
-          creadoEn: serverTimestamp(),
-        });
-        console.log('✓ Mensaje inicial creado en el chat');
-      } catch (errorMensaje) {
-        console.error('Error al crear mensaje inicial:', errorMensaje);
-        // Continuar aunque falle el mensaje
+      if (postulacionesCreadas.length > 0) {
+        if (hijosConError.length > 0) {
+          Alert.alert(
+            'Postulaciones creadas parcialmente',
+            `Se crearon postulaciones para ${postulacionesCreadas.length} hijo(s), pero ${hijosConError.join(', ')} ya están inscritos.`
+          );
+        } else {
+          Alert.alert(
+            'Éxito',
+            `Se crearon ${postulacionesCreadas.length} postulación(es) exitosamente.`
+          );
+        }
+        
+        // Navegar al chat del primer hijo postulado
+        if (postulacionesCreadas.length > 0) {
+          router.push({
+            pathname: '/chat-validacion',
+            params: { idPostulacion: postulacionesCreadas[0] },
+          });
+        }
       }
-      
-      const alertaData = {
-        tipoAlerta: 'Postulacion',
-        descripcion: (nombreApoderado || 'Un apoderado') + ' esta postulando a tu furgon',
-        rutDestinatario: rutConductorNormalizado, // Usar RUT normalizado para búsqueda
-        rutDestinatarioOriginal: rutConductor, // Guardar también el original por compatibilidad
-        rutaDestino: '/chat-validacion',
-        parametros: {
-          idPostulacion: postulacionDoc.id,
-          rutPadre: rutUsuario,
-          rutConductor: rutConductorNormalizado, // También normalizar en parámetros
-          rutConductorOriginal: rutConductor, // Guardar original también
-          rutHijo: rutHijoSeleccionado,
-          patenteFurgon,
-        },
-        creadoEn: serverTimestamp(),
-        leida: false,
-        patenteFurgon,
-      };
-      
-      console.log('Datos de la alerta:', JSON.stringify(alertaData, null, 2));
-      
-      const alertaDoc = await addDoc(collection(db, 'Alertas'), alertaData);
-      console.log('✓ Alerta de postulación creada exitosamente con ID:', alertaDoc.id);
-
-      router.push({
-        pathname: '/chat-validacion',
-        params: { idPostulacion: postulacionDoc.id },
-      });
     } catch (error) {
       console.error('Error al postular:', error);
       Alert.alert('Error', 'No se pudo enviar la solicitud.');
@@ -751,24 +623,59 @@ export default function PostularFurgon() {
         <Text style={styles.verified}>Verificado: Si</Text>
       </View>
 
-      <Text style={styles.label}>Selecciona hijo</Text>
-      <View style={styles.pickerContainer}>
-        <Picker
-          selectedValue={hijoSeleccionado}
-          onValueChange={handleSeleccionHijo}
-          style={styles.picker}
-          enabled={hijos.length > 0}
-        >
-          <Picker.Item label="Selecciona un hijo..." value="" />
-          {hijos.map((hijo) => (
-            <Picker.Item
-              key={hijo.id}
-              label={`${hijo.nombres} ${hijo.apellidos}`}
-              value={hijo.id}
-            />
-          ))}
-        </Picker>
+      <Text style={styles.label}>Selecciona hijo(s)</Text>
+      {hijos.length > 0 && (
+        <View style={styles.seleccionarTodosContainer}>
+          <Pressable onPress={seleccionarTodos} style={styles.seleccionarTodosButton}>
+            <Text style={styles.seleccionarTodosText}>Seleccionar todos</Text>
+          </Pressable>
+          {hijosSeleccionados.size > 0 && (
+            <Pressable onPress={deseleccionarTodos} style={styles.seleccionarTodosButton}>
+              <Text style={styles.seleccionarTodosText}>Deseleccionar todos</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+      <View style={styles.hijosListContainer}>
+        {hijos.length === 0 ? (
+          <Text style={styles.noHijosText}>No hay hijos disponibles</Text>
+        ) : (
+          hijos.map((hijo) => {
+            const estaSeleccionado = hijosSeleccionados.has(hijo.id);
+            return (
+              <Pressable
+                key={hijo.id}
+                style={[
+                  styles.hijoItem,
+                  estaSeleccionado && styles.hijoItemSeleccionado,
+                ]}
+                onPress={() => handleToggleHijo(hijo.id, hijo.rut)}
+              >
+                <View style={styles.hijoItemContent}>
+                  <Ionicons
+                    name={estaSeleccionado ? 'checkbox' : 'checkbox-outline'}
+                    size={24}
+                    color={estaSeleccionado ? '#127067' : '#999'}
+                  />
+                  <Text
+                    style={[
+                      styles.hijoItemText,
+                      estaSeleccionado && styles.hijoItemTextSeleccionado,
+                    ]}
+                  >
+                    {hijo.nombres} {hijo.apellidos}
+                  </Text>
+                </View>
+              </Pressable>
+            );
+          })
+        )}
       </View>
+      {hijosSeleccionados.size > 0 && (
+        <Text style={styles.contadorText}>
+          {hijosSeleccionados.size} hijo(s) seleccionado(s)
+        </Text>
+      )}
 
       <TouchableHighlight style={styles.button} onPress={postular} underlayColor="#0c5c4e">
         <Text style={styles.buttonText}>Postular</Text>
@@ -866,6 +773,70 @@ const styles = StyleSheet.create({
     height: 50,
     width: '100%',
     color: '#333',
+  },
+  seleccionarTodosContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    gap: 10,
+  },
+  seleccionarTodosButton: {
+    flex: 1,
+    backgroundColor: '#E6EFEF',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  seleccionarTodosText: {
+    color: '#127067',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  hijosListContainer: {
+    width: '100%',
+    marginBottom: 15,
+    maxHeight: 200,
+  },
+  hijoItem: {
+    backgroundColor: '#fff',
+    borderColor: '#dce7e5',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+  },
+  hijoItemSeleccionado: {
+    backgroundColor: '#E6EFEF',
+    borderColor: '#127067',
+    borderWidth: 2,
+  },
+  hijoItemContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  hijoItemText: {
+    fontSize: 16,
+    color: '#333',
+    flex: 1,
+  },
+  hijoItemTextSeleccionado: {
+    color: '#127067',
+    fontWeight: '600',
+  },
+  noHijosText: {
+    textAlign: 'center',
+    color: '#999',
+    fontSize: 14,
+    padding: 20,
+  },
+  contadorText: {
+    fontSize: 14,
+    color: '#127067',
+    fontWeight: '600',
+    marginBottom: 10,
+    textAlign: 'center',
   },
   button: {
     backgroundColor: '#127067',

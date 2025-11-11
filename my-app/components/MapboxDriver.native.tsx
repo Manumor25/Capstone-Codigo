@@ -10,6 +10,23 @@ interface Props {
   simulatedPath?: LatLng[];
 }
 
+// Componente personalizado para el marcador de furgón
+const FurgonMarker = () => (
+  <View style={styles.markerContainer}>
+    <View style={styles.furgonBody}>
+      {/* Ventanas */}
+      <View style={styles.ventana} />
+      <View style={[styles.ventana, styles.ventanaMargin]} />
+      <View style={[styles.ventana, styles.ventanaMargin]} />
+    </View>
+    {/* Ruedas */}
+    <View style={styles.ruedaContainer}>
+      <View style={styles.rueda} />
+      <View style={[styles.rueda, styles.ruedaRight]} />
+    </View>
+  </View>
+);
+
 export default function MapboxDriver({ driverLocation, simulatedPath }: Props) {
   const initial = {
     latitude: driverLocation?.latitude || -33.45,
@@ -30,7 +47,10 @@ export default function MapboxDriver({ driverLocation, simulatedPath }: Props) {
           <Marker
             key={index}
             coordinate={coordinate}
-          />
+            anchor={{ x: 0.5, y: 0.5 }}
+          >
+            <FurgonMarker />
+          </Marker>
         ))}
       </MapView>
     </View>
@@ -44,5 +64,47 @@ const styles = StyleSheet.create({
   map: {
     width: '100%',
     height: '100%'
-  }
+  },
+  markerContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 48,
+    height: 48,
+  },
+  furgonBody: {
+    width: 40,
+    height: 24,
+    backgroundColor: '#127067',
+    borderRadius: 3,
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start',
+    paddingTop: 3,
+    paddingLeft: 3,
+    flexDirection: 'row',
+  },
+  ventana: {
+    width: 5,
+    height: 6,
+    backgroundColor: '#87CEEB',
+    borderRadius: 1,
+  },
+  ventanaMargin: {
+    marginLeft: 6,
+  },
+  ruedaContainer: {
+    flexDirection: 'row',
+    marginTop: 2,
+    width: 40,
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+  },
+  rueda: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#333',
+  },
+  ruedaRight: {
+    marginLeft: 0,
+  },
 });

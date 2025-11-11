@@ -293,28 +293,104 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
     });
 
     if (locationToUse) {
-      // Crear marcador más visible y grande
+      // Crear marcador de furgón
       const el = document.createElement('div');
       el.className = 'custom-location-marker';
-      el.style.width = '32px';
-      el.style.height = '32px';
-      el.style.borderRadius = '50%';
-      el.style.backgroundColor = '#127067';
-      el.style.border = '4px solid #fff';
-      el.style.boxShadow = '0 4px 12px rgba(0,0,0,0.5)';
+      el.style.width = '48px';
+      el.style.height = '48px';
       el.style.cursor = 'pointer';
       el.style.display = 'flex';
       el.style.alignItems = 'center';
       el.style.justifyContent = 'center';
       el.style.zIndex = '1000';
+      el.style.filter = 'drop-shadow(0 4px 12px rgba(0,0,0,0.5))';
 
-      // Punto central blanco
-      const puntoCentral = document.createElement('div');
-      puntoCentral.style.width = '12px';
-      puntoCentral.style.height = '12px';
-      puntoCentral.style.borderRadius = '50%';
-      puntoCentral.style.backgroundColor = '#fff';
-      el.appendChild(puntoCentral);
+      // SVG de furgón
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('width', '48');
+      svg.setAttribute('height', '48');
+      svg.setAttribute('viewBox', '0 0 48 48');
+      svg.style.display = 'block';
+
+      // Cuerpo del furgón
+      const cuerpo = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      cuerpo.setAttribute('x', '8');
+      cuerpo.setAttribute('y', '18');
+      cuerpo.setAttribute('width', '32');
+      cuerpo.setAttribute('height', '20');
+      cuerpo.setAttribute('rx', '3');
+      cuerpo.setAttribute('fill', '#127067');
+      svg.appendChild(cuerpo);
+
+      // Ventanas delanteras
+      const ventana1 = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      ventana1.setAttribute('x', '10');
+      ventana1.setAttribute('y', '20');
+      ventana1.setAttribute('width', '6');
+      ventana1.setAttribute('height', '8');
+      ventana1.setAttribute('rx', '1');
+      ventana1.setAttribute('fill', '#87CEEB');
+      svg.appendChild(ventana1);
+
+      const ventana2 = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      ventana2.setAttribute('x', '18');
+      ventana2.setAttribute('y', '20');
+      ventana2.setAttribute('width', '6');
+      ventana2.setAttribute('height', '8');
+      ventana2.setAttribute('rx', '1');
+      ventana2.setAttribute('fill', '#87CEEB');
+      svg.appendChild(ventana2);
+
+      // Ventanas traseras
+      const ventana3 = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      ventana3.setAttribute('x', '26');
+      ventana3.setAttribute('y', '20');
+      ventana3.setAttribute('width', '6');
+      ventana3.setAttribute('height', '8');
+      ventana3.setAttribute('rx', '1');
+      ventana3.setAttribute('fill', '#87CEEB');
+      svg.appendChild(ventana3);
+
+      const ventana4 = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      ventana4.setAttribute('x', '34');
+      ventana4.setAttribute('y', '20');
+      ventana4.setAttribute('width', '4');
+      ventana4.setAttribute('height', '8');
+      ventana4.setAttribute('rx', '1');
+      ventana4.setAttribute('fill', '#87CEEB');
+      svg.appendChild(ventana4);
+
+      // Ruedas
+      const rueda1 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      rueda1.setAttribute('cx', '14');
+      rueda1.setAttribute('cy', '40');
+      rueda1.setAttribute('r', '4');
+      rueda1.setAttribute('fill', '#333');
+      svg.appendChild(rueda1);
+
+      const rueda2 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      rueda2.setAttribute('cx', '34');
+      rueda2.setAttribute('cy', '40');
+      rueda2.setAttribute('r', '4');
+      rueda2.setAttribute('fill', '#333');
+      svg.appendChild(rueda2);
+
+      // Detalles de las ruedas
+      const detalleRueda1 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      detalleRueda1.setAttribute('cx', '14');
+      detalleRueda1.setAttribute('cy', '40');
+      detalleRueda1.setAttribute('r', '2');
+      detalleRueda1.setAttribute('fill', '#666');
+      svg.appendChild(detalleRueda1);
+
+      const detalleRueda2 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      detalleRueda2.setAttribute('cx', '34');
+      detalleRueda2.setAttribute('cy', '40');
+      detalleRueda2.setAttribute('r', '2');
+      detalleRueda2.setAttribute('fill', '#666');
+      svg.appendChild(detalleRueda2);
+
+      el.appendChild(svg);
 
       // Crear y agregar marcador
       const marker = new mapboxgl.Marker({ element: el })

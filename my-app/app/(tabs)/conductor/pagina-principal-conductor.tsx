@@ -4,11 +4,12 @@ import { makeShadow } from '@/utils/shadow';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Link, useRouter } from 'expo-router';
-import { collection, doc, getDocs, limit, onSnapshot, query, setDoc, where, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, getDocs, limit, onSnapshot, query, setDoc, where, serverTimestamp, getDoc, addDoc } from 'firebase/firestore';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import * as Location from 'expo-location';
 import {
   Alert,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -39,6 +40,9 @@ export default function PaginaPrincipalConductor() {
   const [rutConductor, setRutConductor] = useState<string>('');
   const [ubicacionActual, setUbicacionActual] = useState<{ latitude: number; longitude: number } | null>(null);
   const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
+  const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0);
+  const [modalAgregarHijoVisible, setModalAgregarHijoVisible] = useState(false);
+  const [alertaSeleccionada, setAlertaSeleccionada] = useState<any | null>(null);
   useSyncRutActivo();
   const router = useRouter();
   const hayAlertasSinRevisar = useMemo(() => {
@@ -68,6 +72,9 @@ export default function PaginaPrincipalConductor() {
     let unsubscribeAlertas1: (() => void) | null = null;
     let unsubscribeAlertas2: (() => void) | null = null;
     let unsubscribeAlertas3: (() => void) | null = null;
+    let unsubscribeAgregarHijo1: (() => void) | null = null;
+    let unsubscribeAgregarHijo2: (() => void) | null = null;
+    let unsubscribeAgregarHijo3: (() => void) | null = null;
 
     const cargarDatos = async () => {
       try {
@@ -151,12 +158,6 @@ export default function PaginaPrincipalConductor() {
 
           // Filtrar alertas por RUT del conductor (normalizado) y por patentes
           const listaFiltrada = alertasArray.filter((alerta) => {
-            // Verificar que tenga idPostulacion
-            if (!alerta.idPostulacion) {
-              console.log('⚠ Alerta sin idPostulacion:', alerta.id);
-              return false;
-            }
-            
             // Verificar RUT del destinatario (normalizado o original)
             const rutDestAlerta = normalizarRut(alerta.rutDestinatario || '');
             const rutDestOriginal = normalizarRut(alerta.rutDestinatarioOriginal || '');
@@ -170,6 +171,34 @@ export default function PaginaPrincipalConductor() {
                 rutNormalizado,
               });
               return false;
+            }
+            
+            // Para alertas de tipo "AgregarHijo", no requerir idPostulacion
+            if (alerta.tipoAlerta === 'AgregarHijo') {
+              // Verificar patente si existe
+              if (alerta.patenteFurgon) {
+                const patenteAlertaNormalizada = normalizarPatente(alerta.patenteFurgon);
+                const tienePatente = patentesSet.has(alerta.patenteFurgon) || patentesSet.has(patenteAlertaNormalizada);
+                
+                if (!tienePatente && patentesSet.size > 0) {
+                  console.log('✗ Alerta AgregarHijo filtrada por patente:', alerta.patenteFurgon);
+                  return false;
+                }
+              }
+              console.log('✓ Alerta AgregarHijo aceptada:', {
+                id: alerta.id,
+                descripcion: alerta.descripcion?.substring(0, 30),
+                patente: alerta.patenteFurgon,
+              });
+              return true;
+            }
+            
+            // Para alertas de tipo "Postulacion", verificar que tenga idPostulacion
+            if (alerta.tipoAlerta === 'Postulacion') {
+              if (!alerta.idPostulacion) {
+                console.log('⚠ Alerta Postulacion sin idPostulacion:', alerta.id);
+                return false;
+              }
             }
             
             // Verificar patente si existe
@@ -186,6 +215,7 @@ export default function PaginaPrincipalConductor() {
             
             console.log('✓ Alerta aceptada:', {
               id: alerta.id,
+              tipo: alerta.tipoAlerta,
               descripcion: alerta.descripcion?.substring(0, 30),
               patente: alerta.patenteFurgon,
             });
@@ -322,6 +352,124 @@ export default function PaginaPrincipalConductor() {
         } catch (error3) {
           console.warn('⚠ No se pudo crear listener 3 (rutDestinatario original):', error3);
         }
+
+        // Listeners para alertas de tipo "AgregarHijo"
+        // Listener 4: Buscar alertas AgregarHijo con RUT normalizado
+        try {
+          const query4 = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'AgregarHijo'),
+            where('rutDestinatario', '==', rutNormalizado),
+            limit(50)
+          );
+          
+          unsubscribeAgregarHijo1 = onSnapshot(
+            query4,
+            (snapshot) => {
+              console.log('✓ Listener 4 (AgregarHijo rutDestinatario normalizado):', snapshot.docs.length, 'alertas');
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as any;
+                const fecha = data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha ? new Date(data.fecha) : null;
+                todasLasAlertasUnicas.set(docSnap.id, {
+                  id: docSnap.id,
+                  tipoAlerta: data.tipoAlerta || 'AgregarHijo',
+                  descripcion: data.descripcion || 'Sin descripcion',
+                  idPostulacion: data.parametros?.idPostulacion || null,
+                  rutaDestino: data.rutaDestino || '/chat-validacion',
+                  parametros: data.parametros || {},
+                  fecha,
+                  patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+                  rutDestinatario: data.rutDestinatario,
+                  rutDestinatarioOriginal: data.rutDestinatarioOriginal,
+                });
+              });
+              procesarYActualizarAlertas();
+            },
+            (error) => console.warn('⚠ Error en listener 4 (AgregarHijo):', error)
+          );
+        } catch (error4) {
+          console.warn('⚠ No se pudo crear listener 4 (AgregarHijo rutDestinatario normalizado):', error4);
+        }
+
+        // Listener 5: Buscar alertas AgregarHijo con RUT original en rutDestinatarioOriginal
+        try {
+          const query5 = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'AgregarHijo'),
+            where('rutDestinatarioOriginal', '==', rutGuardado),
+            limit(50)
+          );
+          
+          unsubscribeAgregarHijo2 = onSnapshot(
+            query5,
+            (snapshot) => {
+              console.log('✓ Listener 5 (AgregarHijo rutDestinatarioOriginal):', snapshot.docs.length, 'alertas');
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as any;
+                const fecha = data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha ? new Date(data.fecha) : null;
+                todasLasAlertasUnicas.set(docSnap.id, {
+                  id: docSnap.id,
+                  tipoAlerta: data.tipoAlerta || 'AgregarHijo',
+                  descripcion: data.descripcion || 'Sin descripcion',
+                  idPostulacion: data.parametros?.idPostulacion || null,
+                  rutaDestino: data.rutaDestino || '/chat-validacion',
+                  parametros: data.parametros || {},
+                  fecha,
+                  patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+                  rutDestinatario: data.rutDestinatario,
+                  rutDestinatarioOriginal: data.rutDestinatarioOriginal,
+                });
+              });
+              procesarYActualizarAlertas();
+            },
+            (error) => console.warn('⚠ Error en listener 5 (AgregarHijo):', error)
+          );
+        } catch (error5) {
+          console.warn('⚠ No se pudo crear listener 5 (AgregarHijo rutDestinatarioOriginal):', error5);
+        }
+
+        // Listener 6: Buscar alertas AgregarHijo con RUT original en rutDestinatario
+        try {
+          const query6 = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'AgregarHijo'),
+            where('rutDestinatario', '==', rutGuardado),
+            limit(50)
+          );
+          
+          unsubscribeAgregarHijo3 = onSnapshot(
+            query6,
+            (snapshot) => {
+              console.log('✓ Listener 6 (AgregarHijo rutDestinatario original):', snapshot.docs.length, 'alertas');
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as any;
+                const fecha = data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha ? new Date(data.fecha) : null;
+                todasLasAlertasUnicas.set(docSnap.id, {
+                  id: docSnap.id,
+                  tipoAlerta: data.tipoAlerta || 'AgregarHijo',
+                  descripcion: data.descripcion || 'Sin descripcion',
+                  idPostulacion: data.parametros?.idPostulacion || null,
+                  rutaDestino: data.rutaDestino || '/chat-validacion',
+                  parametros: data.parametros || {},
+                  fecha,
+                  patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+                  rutDestinatario: data.rutDestinatario,
+                  rutDestinatarioOriginal: data.rutDestinatarioOriginal,
+                });
+              });
+              procesarYActualizarAlertas();
+            },
+            (error) => console.warn('⚠ Error en listener 6 (AgregarHijo):', error)
+          );
+        } catch (error6) {
+          console.warn('⚠ No se pudo crear listener 6 (AgregarHijo rutDestinatario original):', error6);
+        }
       } catch (error) {
         console.error('Error al cargar datos:', error);
         Alert.alert('Error', 'No se pudieron cargar los datos.');
@@ -340,6 +488,15 @@ export default function PaginaPrincipalConductor() {
       }
       if (unsubscribeAlertas3) {
         unsubscribeAlertas3();
+      }
+      if (unsubscribeAgregarHijo1) {
+        unsubscribeAgregarHijo1();
+      }
+      if (unsubscribeAgregarHijo2) {
+        unsubscribeAgregarHijo2();
+      }
+      if (unsubscribeAgregarHijo3) {
+        unsubscribeAgregarHijo3();
       }
     };
   }, []);
@@ -466,6 +623,98 @@ export default function PaginaPrincipalConductor() {
     };
   }, [rutConductor]);
 
+  // Listener para contar mensajes no leídos
+  useEffect(() => {
+    let unsubscribeMensajes: (() => void) | null = null;
+
+    const contarMensajesNoLeidos = async () => {
+      try {
+        const rut = await AsyncStorage.getItem('rutUsuario');
+        if (!rut) return;
+
+        // Obtener todos los chats del conductor desde lista_pasajeros
+        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+        const q = query(listaPasajerosRef, where('rutConductor', '==', rut));
+        const snapshot = await getDocs(q);
+
+        let totalNoLeidos = 0;
+        const chatsIds = new Set<string>();
+
+        // Recopilar todos los idPostulacion y chatIds
+        for (const docSnap of snapshot.docs) {
+          const data = docSnap.data();
+          if (data.idPostulacion) {
+            chatsIds.add(`post_${data.idPostulacion}`);
+          }
+          if (data.rutHijo && data.rutApoderado) {
+            const chatId = `agregar_hijo_${data.rutHijo}_${data.rutApoderado}_${rut}`;
+            chatsIds.add(`chat_${chatId}`);
+          }
+        }
+
+        // Contar mensajes no leídos en cada chat
+        const mensajesRef = collection(db, 'MensajesChat');
+        for (const chatKey of chatsIds) {
+          let qMensajes;
+          
+          if (chatKey.startsWith('post_')) {
+            const idPostulacion = chatKey.replace('post_', '');
+            qMensajes = query(mensajesRef, where('idPostulacion', '==', idPostulacion));
+          } else {
+            const chatId = chatKey.replace('chat_', '');
+            qMensajes = query(mensajesRef, where('chatId', '==', chatId));
+          }
+
+          const mensajesSnap = await getDocs(qMensajes);
+          mensajesSnap.docs.forEach((docSnap) => {
+            const msgData = docSnap.data();
+            // Contar mensajes no leídos donde el receptor es el conductor
+            if (msgData.receptor === rut && 
+                msgData.emisor !== rut && 
+                msgData.emisor !== 'Sistema' &&
+                (!msgData.leido || msgData.leido === false)) {
+              totalNoLeidos++;
+            }
+          });
+        }
+
+        setMensajesNoLeidos(totalNoLeidos);
+      } catch (error) {
+        console.error('Error al contar mensajes no leídos:', error);
+      }
+    };
+
+    contarMensajesNoLeidos();
+
+    // Listener en tiempo real para mensajes
+    const setupListener = async () => {
+      try {
+        const rut = await AsyncStorage.getItem('rutUsuario');
+        if (!rut) return;
+
+        // Escuchar todos los mensajes donde el receptor es el conductor
+        const mensajesRef = collection(db, 'MensajesChat');
+        const q = query(mensajesRef, where('receptor', '==', rut));
+        
+        unsubscribeMensajes = onSnapshot(q, () => {
+          contarMensajesNoLeidos();
+        }, (error) => {
+          console.error('Error en listener de mensajes:', error);
+        });
+      } catch (error) {
+        console.error('Error al configurar listener de mensajes:', error);
+      }
+    };
+
+    setupListener();
+
+    return () => {
+      if (unsubscribeMensajes) {
+        unsubscribeMensajes();
+      }
+    };
+  }, []);
+
   const handleGenerarRuta = () => {
     Alert.alert('Generar Ruta', 'Función de generar ruta en desarrollo');
   };
@@ -488,12 +737,201 @@ export default function PaginaPrincipalConductor() {
     }
   };
 
+  const handleAceptarAgregarHijo = async () => {
+    if (!alertaSeleccionada) return;
+    
+    try {
+      const rut = await AsyncStorage.getItem('rutUsuario');
+      if (!rut) {
+        Alert.alert('Error', 'No se pudo obtener el RUT del usuario.');
+        return;
+      }
+
+      const fechaISO = new Date().toISOString();
+      const params = alertaSeleccionada.parametros || {};
+      const rutApoderado = params.rutPadre as string;
+      const rutHijo = params.rutHijo as string;
+      const patenteFurgon = params.patenteFurgon as string;
+      const idFurgon = params.idFurgon as string || '';
+      const nombreHijo = params.nombreHijo as string || '';
+      const nombreApoderado = params.nombreApoderado as string || '';
+
+      if (!rutApoderado || !rutHijo || !patenteFurgon) {
+        Alert.alert('Error', 'Faltan datos necesarios para completar la aceptación.');
+        return;
+      }
+
+      // Cargar datos del hijo si no están disponibles
+      let nombreHijoFinal = nombreHijo;
+      let colegio = '';
+      if (!nombreHijoFinal && rutHijo) {
+        try {
+          const hijoRef = doc(db, 'Hijos', rutHijo);
+          const hijoSnap = await getDoc(hijoRef);
+          if (hijoSnap.exists()) {
+            const hijoData = hijoSnap.data();
+            nombreHijoFinal = `${hijoData.nombres || ''} ${hijoData.apellidos || ''}`.trim();
+            colegio = hijoData.colegio || '';
+          }
+        } catch (error) {
+          console.error('Error al cargar datos del hijo:', error);
+        }
+      }
+
+      // Cargar datos del apoderado si no están disponibles
+      let nombreApoderadoFinal = nombreApoderado;
+      if (!nombreApoderadoFinal && rutApoderado) {
+        try {
+          const apoderadoRef = query(collection(db, 'usuarios'), where('rut', '==', rutApoderado));
+          const apoderadoSnap = await getDocs(apoderadoRef);
+          if (!apoderadoSnap.empty) {
+            const apoderadoData = apoderadoSnap.docs[0].data();
+            nombreApoderadoFinal = `${apoderadoData.nombres || ''} ${apoderadoData.apellidos || ''}`.trim();
+          }
+        } catch (error) {
+          console.error('Error al cargar datos del apoderado:', error);
+        }
+      }
+
+      // Agregar el hijo a lista_pasajeros
+      const listaPasajerosRef = collection(db, 'lista_pasajeros');
+      const payloadListaPasajeros = {
+        rutConductor: rut,
+        rutApoderado,
+        nombreApoderado: nombreApoderadoFinal,
+        rutHijo,
+        nombreHijo: nombreHijoFinal,
+        patenteFurgon,
+        idFurgon,
+        colegio,
+        nombreFurgon: params.nombreFurgon as string || '',
+        fechaAceptacion: fechaISO,
+        estado: 'aceptada',
+        origen: 'agregar_hijo',
+      };
+
+      await addDoc(listaPasajerosRef, payloadListaPasajeros);
+
+      // Enviar mensaje de confirmación (uno para cada participante)
+      const chatId = `agregar_hijo_${rutHijo}_${rutApoderado}_${rut}`;
+      const participantesChat = [rut, rutApoderado].filter(Boolean).sort();
+      
+      // Mensaje para el apoderado
+      await addDoc(collection(db, 'MensajesChat'), {
+        chatId,
+        texto: 'El hijo ha sido agregado exitosamente al furgón.',
+        emisor: 'Sistema',
+        receptor: rutApoderado,
+        participantes: participantesChat,
+        fecha: fechaISO,
+        entregado: true,
+        leido: false,
+      });
+      
+      // Mensaje para el conductor (para que también lo vea)
+      await addDoc(collection(db, 'MensajesChat'), {
+        chatId,
+        texto: 'El hijo ha sido agregado exitosamente al furgón.',
+        emisor: 'Sistema',
+        receptor: rut,
+        participantes: participantesChat,
+        fecha: fechaISO,
+        entregado: true,
+        leido: false,
+      });
+
+      // Eliminar la alerta
+      if (alertaSeleccionada.id) {
+        try {
+          await setDoc(doc(db, 'Alertas', alertaSeleccionada.id), {
+            revisado: true,
+            fechaRevision: fechaISO,
+          }, { merge: true });
+        } catch (error) {
+          console.error('Error al marcar alerta como revisada:', error);
+        }
+      }
+
+      Alert.alert('Éxito', 'El hijo ha sido agregado exitosamente al furgón.');
+      setModalAgregarHijoVisible(false);
+      setAlertaSeleccionada(null);
+    } catch (error) {
+      console.error('Error al aceptar agregar hijo:', error);
+      Alert.alert('Error', 'No se pudo agregar el hijo al furgón.');
+    }
+  };
+
+  const handleRechazarAgregarHijo = async () => {
+    if (!alertaSeleccionada) return;
+    
+    try {
+      const fechaISO = new Date().toISOString();
+      const params = alertaSeleccionada.parametros || {};
+      const rutApoderado = params.rutPadre as string;
+      const rutHijo = params.rutHijo as string;
+      const rut = await AsyncStorage.getItem('rutUsuario');
+      if (!rut) return;
+
+      // Enviar mensaje de rechazo (uno para cada participante)
+      const chatId = `agregar_hijo_${rutHijo}_${rutApoderado}_${rut}`;
+      const participantesChat = [rut, rutApoderado].filter(Boolean).sort();
+      
+      // Mensaje para el apoderado
+      await addDoc(collection(db, 'MensajesChat'), {
+        chatId,
+        texto: 'La solicitud para agregar al hijo ha sido rechazada.',
+        emisor: 'Sistema',
+        receptor: rutApoderado,
+        participantes: participantesChat,
+        fecha: fechaISO,
+        entregado: true,
+        leido: false,
+      });
+      
+      // Mensaje para el conductor (para que también lo vea)
+      await addDoc(collection(db, 'MensajesChat'), {
+        chatId,
+        texto: 'La solicitud para agregar al hijo ha sido rechazada.',
+        emisor: 'Sistema',
+        receptor: rut,
+        participantes: participantesChat,
+        fecha: fechaISO,
+        entregado: true,
+        leido: false,
+      });
+
+      // Eliminar la alerta
+      if (alertaSeleccionada.id) {
+        try {
+          await setDoc(doc(db, 'Alertas', alertaSeleccionada.id), {
+            revisado: true,
+            fechaRevision: fechaISO,
+          }, { merge: true });
+        } catch (error) {
+          console.error('Error al marcar alerta como revisada:', error);
+        }
+      }
+
+      Alert.alert('Solicitud rechazada', 'La solicitud ha sido rechazada.');
+      setModalAgregarHijoVisible(false);
+      setAlertaSeleccionada(null);
+    } catch (error) {
+      console.error('Error al rechazar agregar hijo:', error);
+      Alert.alert('Error', 'No se pudo rechazar la solicitud.');
+    }
+  };
+
   return (
     <View style={styles.container}>
       {/* Barra superior */}
       <View style={styles.greenHeader}>
         <Pressable onPress={() => setMenuVisible(!menuVisible)} style={styles.iconButton}>
-          <Ionicons name="menu" size={28} color="#fff" />
+          <View style={styles.iconWrapper}>
+            <Ionicons name="menu" size={28} color="#fff" />
+            {mensajesNoLeidos > 0 && (
+              <View style={styles.notificationDot} />
+            )}
+          </View>
         </Pressable>
         <Pressable
           onPress={() => router.replace('/(tabs)/conductor/pagina-principal-conductor')}
@@ -558,7 +996,12 @@ export default function PaginaPrincipalConductor() {
           </Link>
           <Link href="/chat-furgon" asChild>
             <TouchableHighlight style={styles.menuButton}>
-              <Text style={styles.menuButtonText}>Chat Apoderados</Text>
+              <View style={styles.menuButtonContent}>
+                <Text style={styles.menuButtonText}>Chat Apoderados</Text>
+                {mensajesNoLeidos > 0 && (
+                  <View style={styles.chatNotificationDot} />
+                )}
+              </View>
             </TouchableHighlight>
           </Link>
         </View>
@@ -585,6 +1028,13 @@ export default function PaginaPrincipalConductor() {
                         style={styles.alertaBoton}
                         underlayColor="#0c5c4e"
                         onPress={() => {
+                          // Si es una alerta de tipo AgregarHijo, mostrar modal
+                          if (alerta.tipoAlerta === 'AgregarHijo') {
+                            setAlertaSeleccionada(alerta);
+                            setModalAgregarHijoVisible(true);
+                            return;
+                          }
+                          // Para otras alertas, navegar normalmente
                           if (!alerta.idPostulacion) return;
                           const params = {
                             ...alerta.parametros,
@@ -611,6 +1061,82 @@ export default function PaginaPrincipalConductor() {
           <View style={styles.alertasPointer} />
         </View>
       )}
+
+      {/* Modal para agregar hijo */}
+      <Modal
+        visible={modalAgregarHijoVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setModalAgregarHijoVisible(false)}
+      >
+        <Pressable 
+          style={styles.modalOverlay}
+          onPress={() => setModalAgregarHijoVisible(false)}
+        >
+          <Pressable 
+            style={styles.modalContent}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Agregar Nuevo Niño</Text>
+              <Pressable onPress={() => setModalAgregarHijoVisible(false)}>
+                <Ionicons name="close" size={24} color="#333" />
+              </Pressable>
+            </View>
+            
+            {alertaSeleccionada && (
+              <View style={styles.modalBody}>
+                <Text style={styles.modalDescription}>
+                  {alertaSeleccionada.descripcion}
+                </Text>
+                {alertaSeleccionada.parametros && (
+                  <View style={styles.modalInfo}>
+                    {alertaSeleccionada.parametros.nombreHijo && (
+                      <Text style={styles.modalInfoText}>
+                        <Text style={styles.modalInfoLabel}>Niño: </Text>
+                        {alertaSeleccionada.parametros.nombreHijo}
+                      </Text>
+                    )}
+                    {alertaSeleccionada.parametros.nombreApoderado && (
+                      <Text style={styles.modalInfoText}>
+                        <Text style={styles.modalInfoLabel}>Apoderado: </Text>
+                        {alertaSeleccionada.parametros.nombreApoderado}
+                      </Text>
+                    )}
+                    {alertaSeleccionada.parametros.patenteFurgon && (
+                      <Text style={styles.modalInfoText}>
+                        <Text style={styles.modalInfoLabel}>Patente: </Text>
+                        {alertaSeleccionada.parametros.patenteFurgon}
+                      </Text>
+                    )}
+                  </View>
+                )}
+                
+                <Text style={styles.modalQuestion}>
+                  ¿Deseas agregar a este niño al furgón?
+                </Text>
+              </View>
+            )}
+
+            <View style={styles.modalButtons}>
+              <TouchableHighlight
+                style={[styles.modalButton, styles.modalButtonRechazar]}
+                underlayColor="#d32f2f"
+                onPress={handleRechazarAgregarHijo}
+              >
+                <Text style={styles.modalButtonTextRechazar}>Rechazar</Text>
+              </TouchableHighlight>
+              <TouchableHighlight
+                style={[styles.modalButton, styles.modalButtonAceptar]}
+                underlayColor="#0c5c4e"
+                onPress={handleAceptarAgregarHijo}
+              >
+                <Text style={styles.modalButtonTextAceptar}>Aceptar</Text>
+              </TouchableHighlight>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Mapa del conductor */}
       <View style={styles.mapaContainer}>
@@ -704,17 +1230,35 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: '#ffffff22',
   },
+  iconWrapper: {
+    position: 'relative',
+  },
   notificationWrapper: {
     position: 'relative',
   },
   notificationDot: {
     position: 'absolute',
-    top: 0,
-    right: 0,
+    top: 2,
+    right: 2,
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#ff5a5f',
+    backgroundColor: '#FF6B35',
+    borderWidth: 2,
+    borderColor: '#127067',
+  },
+  menuButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  chatNotificationDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FF6B35',
+    marginLeft: 8,
   },
   notificationBadge: {
     position: 'absolute',
@@ -939,6 +1483,99 @@ const styles = StyleSheet.create({
   actionButtonText: {
     color: '#fff',
     fontSize: 14,
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 15,
+    padding: 20,
+    width: '100%',
+    maxWidth: 400,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 10,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#127067',
+  },
+  modalBody: {
+    marginBottom: 20,
+  },
+  modalDescription: {
+    fontSize: 16,
+    color: '#333',
+    marginBottom: 15,
+    lineHeight: 22,
+  },
+  modalInfo: {
+    backgroundColor: '#f5f5f5',
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 15,
+  },
+  modalInfoText: {
+    fontSize: 14,
+    color: '#333',
+    marginBottom: 8,
+  },
+  modalInfoLabel: {
+    fontWeight: 'bold',
+    color: '#127067',
+  },
+  modalQuestion: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    textAlign: 'center',
+    marginTop: 10,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  modalButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalButtonAceptar: {
+    backgroundColor: '#127067',
+  },
+  modalButtonRechazar: {
+    backgroundColor: '#f44336',
+  },
+  modalButtonTextAceptar: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  modalButtonTextRechazar: {
+    color: '#fff',
+    fontSize: 16,
     fontWeight: '600',
   },
 });

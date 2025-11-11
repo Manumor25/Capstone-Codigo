@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -8,6 +9,8 @@ import {
   StyleSheet,
   FlatList,
   Alert,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -23,6 +26,8 @@ import {
   updateDoc,
   onSnapshot,
   getDocs,
+  writeBatch,
+  deleteDoc,
 } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -41,9 +46,16 @@ export default function ChatValidacion() {
   const [datosApoderado, setDatosApoderado] = useState<any | null>(null);
   const [autorizado, setAutorizado] = useState(false);
   const [cargandoAuth, setCargandoAuth] = useState(true);
+  const [mostrarBotonesValidacion, setMostrarBotonesValidacion] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
   const redireccionProgramada = useRef(false);
+  const chatVisibleRef = useRef(false);
+  const mensajesPendientesMarcarRef = useRef<Set<string>>(new Set());
+  const flatListRef = useRef<FlatList>(null);
+  const [mensajesEliminados, setMensajesEliminados] = useState<Set<string>>(new Set());
 
   const idPostulacion = params.idPostulacion as string;
+  const esAgregarHijo = params.accion === 'agregar_hijo' || params.tipoAlerta === 'AgregarHijo';
   const esChatUrgencia = postulacion?.tipo === 'urgencia';
 
   useEffect(() => {
@@ -56,13 +68,183 @@ export default function ChatValidacion() {
 
       setRutUsuario(rut);
       setRolUsuario(rol);
+      
+      // Cargar mensajes eliminados por el usuario
+      try {
+        let chatKey = '';
+        if (idPostulacion) {
+          chatKey = `chat_eliminados_${idPostulacion}`;
+        } else if (esAgregarHijo && params.rutHijo) {
+          const chatId = `agregar_hijo_${params.rutHijo}_${params.rutPadre}_${params.rutConductor || rut}`;
+          chatKey = `chat_eliminados_${chatId}`;
+        }
+        
+        if (chatKey) {
+          const eliminadosGuardados = await AsyncStorage.getItem(chatKey);
+          if (eliminadosGuardados) {
+            const idsEliminados = JSON.parse(eliminadosGuardados);
+            setMensajesEliminados(new Set(idsEliminados));
+          }
+        }
+      } catch (error) {
+        console.error('Error al cargar mensajes eliminados:', error);
+      }
+
+      let unsubscribe: (() => void) | undefined;
+
+      // Si es una alerta de AgregarHijo, cargar datos desde los parámetros
+      if (esAgregarHijo && params.rutHijo) {
+        const rutHijo = params.rutHijo as string;
+        const rutPadre = params.rutPadre as string;
+        const rutConductorParam = params.rutConductor as string || rut;
+        const patenteFurgon = params.patenteFurgon as string;
+        const idFurgon = params.idFurgon as string;
+        const nombreHijo = params.nombreHijo as string || '';
+        const nombreApoderado = params.nombreApoderado as string || '';
+
+        // Cargar datos del hijo
+        try {
+          const hijoRef = doc(db, 'Hijos', rutHijo);
+          const hijoSnap = await getDoc(hijoRef);
+          if (hijoSnap.exists()) {
+            setHijo({ id: hijoSnap.id, ...hijoSnap.data() });
+          }
+        } catch (error) {
+          console.error('Error al cargar datos del hijo:', error);
+        }
+
+        // Cargar datos del apoderado
+        try {
+          const apoderadoRef = query(collection(db, 'usuarios'), where('rut', '==', rutPadre));
+          const apoderadoSnap = await getDocs(apoderadoRef);
+          if (!apoderadoSnap.empty) {
+            const apoderadoData = apoderadoSnap.docs[0].data();
+            setDatosApoderado(apoderadoData);
+            setNombreReceptor(nombreApoderado || `${apoderadoData.nombres || ''} ${apoderadoData.apellidos || ''}`.trim());
+          }
+        } catch (error) {
+          console.error('Error al cargar datos del apoderado:', error);
+        }
+
+        setRutReceptor(rutPadre);
+        setAutorizado(true);
+        setCargandoAuth(false);
+        // No mostrar botones de validación para chats de AgregarHijo desde lista_pasajeros (ya aceptados)
+        setMostrarBotonesValidacion(false);
+
+        // Crear un identificador único para el chat de AgregarHijo
+        const chatId = `agregar_hijo_${rutHijo}_${rutPadre}_${rutConductorParam}`;
+        const claveChat = `chat_agregar_hijo_${rutHijo}_${rutPadre}_${rutConductorParam}`;
+        
+        // Marcar como leído al abrir el chat
+        try {
+          const fechaActual = new Date().toISOString();
+          await AsyncStorage.setItem(`ultima_lectura_${claveChat}`, fechaActual);
+        } catch (error) {
+          console.error('Error al marcar como leído:', error);
+        }
+        
+        // Suscripción a mensajes usando el chatId
+        const mensajesRef = collection(db, 'MensajesChat');
+        const q = query(mensajesRef, where('chatId', '==', chatId));
+        unsubscribe = onSnapshot(q, async (snapshot) => {
+          const lista = snapshot.docs
+            .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as any) }))
+            .sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+          console.log('Mensajes cargados (AgregarHijo):', lista.length, 'mensajes');
+          console.log('Rut usuario:', rut, 'Rut receptor:', rutPadre);
+          lista.forEach((msg: any) => {
+            console.log('Mensaje:', {
+              id: msg.id,
+              emisor: msg.emisor,
+              receptor: msg.receptor,
+              texto: msg.texto?.substring(0, 30),
+              participantes: msg.participantes
+            });
+          });
+          setMensajes(lista);
+          
+          // Marcar mensajes como entregados cuando el receptor los recibe
+          const batch = writeBatch(db);
+          let hayActualizaciones = false;
+          
+          lista.forEach((msg: any) => {
+            // Si el mensaje es para el usuario actual (receptor) y aún no está marcado como entregado
+            if (msg.receptor === rut && msg.emisor !== rut && msg.emisor !== 'Sistema') {
+              // Marcar como entregado si aún no lo está
+              if (!msg.entregado) {
+                const msgRef = doc(db, 'MensajesChat', msg.id);
+                batch.update(msgRef, { entregado: true, fechaEntregado: new Date().toISOString() });
+                hayActualizaciones = true;
+              }
+              
+              // Guardar mensajes pendientes de marcar como leídos (solo si el chat está visible)
+              if (!msg.leido) {
+                mensajesPendientesMarcarRef.current.add(msg.id);
+              }
+            }
+          });
+          
+          if (hayActualizaciones) {
+            try {
+              await batch.commit();
+            } catch (error) {
+              console.error('Error al actualizar estados de entrega:', error);
+            }
+          }
+          
+          // Marcar como leído solo si el chat está visible
+          if (chatVisibleRef.current && mensajesPendientesMarcarRef.current.size > 0) {
+            const batchLeidos = writeBatch(db);
+            let hayLeidos = false;
+            
+            mensajesPendientesMarcarRef.current.forEach((msgId) => {
+              const msg = lista.find((m: any) => m.id === msgId);
+              if (msg && msg.receptor === rut && msg.emisor !== rut && msg.emisor !== 'Sistema' && !msg.leido) {
+                const msgRef = doc(db, 'MensajesChat', msgId);
+                batchLeidos.update(msgRef, { leido: true, fechaLeido: new Date().toISOString() });
+                hayLeidos = true;
+              }
+            });
+            
+            if (hayLeidos) {
+              try {
+                await batchLeidos.commit();
+                mensajesPendientesMarcarRef.current.clear();
+              } catch (error) {
+                console.error('Error al actualizar estados de lectura:', error);
+              }
+            }
+          }
+        });
+
+        return () => {
+          if (unsubscribe) unsubscribe();
+        };
+      }
+
+      // Si es una postulación normal, cargar desde Postulaciones
+      if (!idPostulacion) {
+        setCargandoAuth(false);
+        return;
+      }
 
       const postRef = doc(db, 'Postulaciones', idPostulacion);
       const postSnap = await getDoc(postRef);
-      let unsubscribe: (() => void) | undefined;
       if (postSnap.exists()) {
         const data = postSnap.data() as any;
         setPostulacion(data);
+        
+        // Verificar si se deben mostrar los botones de validación
+        // Solo mostrar si:
+        // 1. El usuario es conductor
+        // 2. La postulación está en estado 'pendiente'
+        // 3. No es un chat de urgencia
+        if (rol === 'conductor' && data.estado === 'pendiente' && data.tipo !== 'urgencia') {
+          setMostrarBotonesValidacion(true);
+        } else {
+          setMostrarBotonesValidacion(false);
+        }
 
         // Datos del hijo
         if (data.idHijo) {
@@ -127,42 +309,122 @@ export default function ChatValidacion() {
           return;
         }
 
+        // Marcar como leído al abrir el chat
+        const claveChat = `chat_${idPostulacion}`;
+        try {
+          const fechaActual = new Date().toISOString();
+          await AsyncStorage.setItem(`ultima_lectura_${claveChat}`, fechaActual);
+        } catch (error) {
+          console.error('Error al marcar como leído:', error);
+        }
+
         // Suscripcion a mensajes solo si esta autorizado
         const mensajesRef = collection(db, 'MensajesChat');
         const q = query(mensajesRef, where('idPostulacion', '==', idPostulacion));
-        unsubscribe = onSnapshot(q, (snapshot) => {
+        unsubscribe = onSnapshot(q, async (snapshot) => {
           const lista = snapshot.docs
             .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as any) }))
             .sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+          console.log('Mensajes cargados (Postulación):', lista.length, 'mensajes');
+          console.log('Rut usuario:', rut, 'Rut receptor:', rutReceptor);
+          lista.forEach((msg: any) => {
+            console.log('Mensaje:', {
+              id: msg.id,
+              emisor: msg.emisor,
+              receptor: msg.receptor,
+              texto: msg.texto?.substring(0, 30),
+              participantes: msg.participantes
+            });
+          });
+          
+          // Verificar si hay un mensaje de sistema de aprobación y el usuario es el apoderado
+          const mensajeAprobacion = lista.find((msg: any) => 
+            msg.emisor === 'Sistema' && 
+            msg.receptor === rut && 
+            msg.texto === 'La postulación ha sido aprobada.'
+          );
+          
+          if (mensajeAprobacion && rol === 'apoderado' && !redireccionProgramada.current) {
+            // Redirigir al apoderado a su página principal después de un breve delay
+            redireccionProgramada.current = true;
+            setTimeout(() => {
+              router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
+            }, 1500); // 1.5 segundos para que el usuario vea el mensaje
+          }
+          
           setMensajes(lista);
           
-          // Detectar si hay un mensaje del sistema indicando que la postulación fue aprobada
-          // y el usuario es apoderado, entonces redirigir a la página principal
-          // Solo redirigir una vez para evitar múltiples redirecciones
-          if (!redireccionProgramada.current && rol === 'apoderado') {
-            const mensajeAprobacion = lista.find((msg) => {
-              if (msg.emisor !== 'Sistema' || !msg.texto) return false;
+          // Marcar mensajes como entregados cuando el receptor los recibe
+          const batch = writeBatch(db);
+          let hayActualizaciones = false;
+          
+          lista.forEach((msg: any) => {
+            // Si el mensaje es para el usuario actual (receptor) y aún no está marcado como entregado
+            if (msg.receptor === rut && msg.emisor !== rut && msg.emisor !== 'Sistema') {
+              // Marcar como entregado si aún no lo está
+              if (!msg.entregado) {
+                const msgRef = doc(db, 'MensajesChat', msg.id);
+                batch.update(msgRef, { entregado: true, fechaEntregado: new Date().toISOString() });
+                hayActualizaciones = true;
+              }
               
-              const textoLower = msg.texto.toLowerCase();
-              // Buscar varias variaciones del mensaje de aprobación
-              return (
-                textoLower.includes('aprobada') || 
-                textoLower.includes('aprobado') ||
-                textoLower.includes('ha sido aprob') ||
-                (textoLower.includes('postulaci') && textoLower.includes('aprob')) ||
-                (textoLower.includes('postulaci??n') && textoLower.includes('aprob')) // Para manejar problemas de codificación
-              );
-            });
-            
-            if (mensajeAprobacion) {
-              redireccionProgramada.current = true;
-              console.log('✅ Postulación aprobada detectada, redirigiendo a página principal en 2.5 segundos...');
-              // Esperar 2.5 segundos para que el usuario vea el mensaje antes de redirigir
-              setTimeout(() => {
-                router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-              }, 2500);
+              // Guardar mensajes pendientes de marcar como leídos (solo si el chat está visible)
+              if (!msg.leido) {
+                mensajesPendientesMarcarRef.current.add(msg.id);
+              }
+            }
+          });
+          
+          if (hayActualizaciones) {
+            try {
+              await batch.commit();
+            } catch (error) {
+              console.error('Error al actualizar estados de entrega:', error);
             }
           }
+          
+          // Marcar como leído solo si el chat está visible
+          if (chatVisibleRef.current && mensajesPendientesMarcarRef.current.size > 0) {
+            const batchLeidos = writeBatch(db);
+            let hayLeidos = false;
+            
+            mensajesPendientesMarcarRef.current.forEach((msgId) => {
+              const msg = lista.find((m: any) => m.id === msgId);
+              if (msg && msg.receptor === rut && msg.emisor !== rut && msg.emisor !== 'Sistema' && !msg.leido) {
+                const msgRef = doc(db, 'MensajesChat', msgId);
+                batchLeidos.update(msgRef, { leido: true, fechaLeido: new Date().toISOString() });
+                hayLeidos = true;
+              }
+            });
+            
+            if (hayLeidos) {
+              try {
+                await batchLeidos.commit();
+                mensajesPendientesMarcarRef.current.clear();
+              } catch (error) {
+                console.error('Error al actualizar estados de lectura:', error);
+              }
+            }
+          }
+          
+          // Verificar el estado actual de la postulación para actualizar los botones
+          try {
+            const postSnap = await getDoc(postRef);
+            if (postSnap.exists()) {
+              const postData = postSnap.data() as any;
+              // Ocultar botones si la postulación ya no está pendiente
+              if (postData.estado !== 'pendiente' || postData.tipo === 'urgencia') {
+                setMostrarBotonesValidacion(false);
+              } else if (rol === 'conductor') {
+                setMostrarBotonesValidacion(true);
+              }
+            }
+          } catch (error) {
+            console.error('Error al verificar estado de postulación:', error);
+          }
+          
+          // Nota: Se removió la redirección automática cuando se detecta aprobación
+          // para permitir que el apoderado pueda seguir chateando normalmente
         });
       } else {
         setCargandoAuth(false);
@@ -176,16 +438,215 @@ export default function ChatValidacion() {
     cargarDatos();
   }, []);
 
+  // Marcar mensajes como leídos cuando el chat está visible y enfocado
+  useFocusEffect(
+    useCallback(() => {
+      // Marcar que el chat está visible
+      chatVisibleRef.current = true;
+      
+      // Esperar un momento para asegurar que el usuario está viendo el chat
+      const timeoutId = setTimeout(async () => {
+        if (!chatVisibleRef.current || mensajes.length === 0) return;
+        
+        const rut = await AsyncStorage.getItem('rutUsuario');
+        if (!rut) return;
+        
+        // Marcar todos los mensajes no leídos como leídos
+        const batch = writeBatch(db);
+        let hayActualizaciones = false;
+        
+        mensajes.forEach((msg: any) => {
+          if (msg.receptor === rut && msg.emisor !== rut && msg.emisor !== 'Sistema' && !msg.leido) {
+            const msgRef = doc(db, 'MensajesChat', msg.id);
+            batch.update(msgRef, { leido: true, fechaLeido: new Date().toISOString() });
+            hayActualizaciones = true;
+            mensajesPendientesMarcarRef.current.delete(msg.id);
+          }
+        });
+        
+        if (hayActualizaciones) {
+          try {
+            await batch.commit();
+          } catch (error) {
+            console.error('Error al marcar mensajes como leídos:', error);
+          }
+        }
+      }, 1000); // Esperar 1 segundo después de que el chat esté visible
+      
+      return () => {
+        chatVisibleRef.current = false;
+        clearTimeout(timeoutId);
+      };
+    }, [mensajes])
+  );
+
   const handleSalirChat = () => {
-    if (rolUsuario === 'apoderado') {
-      router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-      return;
-    }
-    if (rolUsuario === 'conductor') {
-      router.replace('/(tabs)/conductor/perfil-conductor');
-      return;
-    }
     router.back();
+  };
+
+  const handleLimpiarChat = () => {
+    console.log('handleLimpiarChat ejecutado');
+    setMenuVisible(false);
+    setTimeout(() => {
+      limpiarChat();
+    }, 200);
+  };
+
+  const limpiarChat = () => {
+    console.log('limpiarChat llamado');
+    Alert.alert(
+      'Limpiar chat',
+      '¿Estás seguro de que deseas eliminar todos los mensajes de este chat? Esta acción no se puede deshacer y afectará a ambos usuarios.',
+      [
+        {
+          text: 'Cancelar',
+          style: 'cancel',
+        },
+        {
+          text: 'Limpiar',
+          style: 'destructive',
+          onPress: async () => {
+            console.log('Confirmación de limpiar chat recibida');
+            try {
+              const rut = await AsyncStorage.getItem('rutUsuario');
+              console.log('RUT obtenido:', rut);
+              if (!rut) {
+                Alert.alert('Error', 'No se pudo obtener el RUT del usuario.');
+                return;
+              }
+
+              const batch = writeBatch(db);
+              const mensajesRef = collection(db, 'MensajesChat');
+              
+              let q;
+              if (idPostulacion) {
+                q = query(mensajesRef, where('idPostulacion', '==', idPostulacion));
+              } else if (esAgregarHijo && params.rutHijo) {
+                const chatId = `agregar_hijo_${params.rutHijo}_${params.rutPadre}_${params.rutConductor || rut}`;
+                q = query(mensajesRef, where('chatId', '==', chatId));
+              } else {
+                Alert.alert('Error', 'No se pudo identificar el chat.');
+                return;
+              }
+
+              const snapshot = await getDocs(q);
+              let mensajesEliminados = 0;
+              
+              console.log('Mensajes encontrados:', snapshot.docs.length);
+              
+              if (snapshot.empty) {
+                Alert.alert('Info', 'No hay mensajes para eliminar.');
+                return;
+              }
+              
+              snapshot.docs.forEach((docSnap) => {
+                // Eliminar todos los mensajes, incluyendo los del sistema
+                batch.delete(doc(db, 'MensajesChat', docSnap.id));
+                mensajesEliminados++;
+              });
+
+              console.log('Eliminando', mensajesEliminados, 'mensajes...');
+              await batch.commit();
+              console.log('Mensajes eliminados exitosamente');
+              
+              // Limpiar el estado local inmediatamente para que el chat se vea vacío
+              setMensajes([]);
+              
+              // Limpiar también los mensajes eliminados guardados localmente
+              let chatKey = '';
+              if (idPostulacion) {
+                chatKey = `chat_eliminados_${idPostulacion}`;
+              } else if (esAgregarHijo && params.rutHijo) {
+                const chatId = `agregar_hijo_${params.rutHijo}_${params.rutPadre}_${params.rutConductor || rut}`;
+                chatKey = `chat_eliminados_${chatId}`;
+              }
+              
+              if (chatKey) {
+                await AsyncStorage.removeItem(chatKey);
+                setMensajesEliminados(new Set());
+              }
+              
+              // Mostrar alerta preguntando si desea eliminar el chat completo
+              Alert.alert(
+                'Mensajes eliminados',
+                `Se eliminaron ${mensajesEliminados} mensaje(s) del chat. ¿Deseas eliminar el chat completo?`,
+                [
+                  {
+                    text: 'No',
+                    style: 'cancel',
+                  },
+                  {
+                    text: 'Sí, eliminar chat',
+                    style: 'destructive',
+                    onPress: async () => {
+                      try {
+                        const rut = await AsyncStorage.getItem('rutUsuario');
+                        if (!rut) {
+                          Alert.alert('Error', 'No se pudo obtener el RUT del usuario.');
+                          return;
+                        }
+
+                        if (idPostulacion) {
+                          // Eliminar la postulación
+                          await deleteDoc(doc(db, 'Postulaciones', idPostulacion));
+                          
+                          // Eliminar registros relacionados en lista_pasajeros
+                          const listaPasajerosRef = collection(db, 'lista_pasajeros');
+                          const pasajerosQuery = query(listaPasajerosRef, where('idPostulacion', '==', idPostulacion));
+                          const pasajerosSnapshot = await getDocs(pasajerosQuery);
+                          
+                          if (!pasajerosSnapshot.empty) {
+                            const batchPasajeros = writeBatch(db);
+                            pasajerosSnapshot.docs.forEach((docSnap) => {
+                              batchPasajeros.delete(docSnap.ref);
+                            });
+                            await batchPasajeros.commit();
+                          }
+                          
+                          Alert.alert('Éxito', 'El chat ha sido eliminado completamente.');
+                          router.back();
+                        } else if (esAgregarHijo && params.rutHijo) {
+                          // Eliminar el registro de lista_pasajeros para este chat
+                          const listaPasajerosRef = collection(db, 'lista_pasajeros');
+                          const rutHijoParam = params.rutHijo as string;
+                          const rutPadreParam = params.rutPadre as string;
+                          const rutConductorParam = params.rutConductor as string || rut;
+                          
+                          const pasajerosQuery = query(
+                            listaPasajerosRef,
+                            where('rutHijo', '==', rutHijoParam),
+                            where('rutApoderado', '==', rutPadreParam),
+                            where('rutConductor', '==', rutConductorParam)
+                          );
+                          const pasajerosSnapshot = await getDocs(pasajerosQuery);
+                          
+                          if (!pasajerosSnapshot.empty) {
+                            const batchPasajeros = writeBatch(db);
+                            pasajerosSnapshot.docs.forEach((docSnap) => {
+                              batchPasajeros.delete(docSnap.ref);
+                            });
+                            await batchPasajeros.commit();
+                          }
+                          
+                          Alert.alert('Éxito', 'El chat ha sido eliminado completamente.');
+                          router.back();
+                        }
+                      } catch (error) {
+                        console.error('Error al eliminar el chat:', error);
+                        Alert.alert('Error', 'No se pudo eliminar el chat.');
+                      }
+                    },
+                  },
+                ]
+              );
+            } catch (error) {
+              console.error('Error al limpiar chat:', error);
+              Alert.alert('Error', 'No se pudo limpiar el chat.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const enviarMensaje = async () => {
@@ -201,14 +662,28 @@ export default function ChatValidacion() {
     }
 
     try {
-      const nuevoMensaje = {
-        idPostulacion,
+      const participantesChat = [rutUsuario, rutReceptor].filter(Boolean).sort();
+      let nuevoMensaje: any = {
         texto: textoLimpio,
         emisor: rutUsuario, // guarda el RUT del usuario
         receptor: rutReceptor,
-        participantes: [rutUsuario, rutReceptor].sort(),
+        participantes: participantesChat,
         fecha: new Date().toISOString(),
+        entregado: false, // Estado inicial: enviado
+        leido: false, // Estado inicial: no leído
       };
+
+      if (esAgregarHijo && params.rutHijo) {
+        // Para alertas de AgregarHijo, usar chatId
+        const rutHijo = params.rutHijo as string;
+        const rutConductorParam = params.rutConductor as string || rutUsuario;
+        const rutPadre = params.rutPadre as string;
+        nuevoMensaje.chatId = `agregar_hijo_${rutHijo}_${rutPadre}_${rutConductorParam}`;
+      } else if (idPostulacion) {
+        // Para postulaciones normales, usar idPostulacion
+        nuevoMensaje.idPostulacion = idPostulacion;
+      }
+
       await addDoc(collection(db, 'MensajesChat'), nuevoMensaje);
       setMensaje('');
     } catch (error) {
@@ -222,21 +697,78 @@ export default function ChatValidacion() {
       return;
     }
     try {
+      const fechaISO = new Date().toISOString();
       const participantesChat = [rutUsuario, rutReceptor].filter(Boolean).sort();
+      
+      // Si es una alerta de AgregarHijo
+      if (esAgregarHijo && params.rutHijo) {
+        const rutApoderado = params.rutPadre as string;
+        const rutHijo = params.rutHijo as string;
+        const chatId = `agregar_hijo_${rutHijo}_${rutApoderado}_${rutUsuario}`;
+        
+        // Mensaje para el apoderado
+        await addDoc(collection(db, 'MensajesChat'), {
+          chatId,
+          texto: 'La solicitud para agregar al hijo ha sido rechazada.',
+          emisor: 'Sistema',
+          receptor: rutApoderado,
+          participantes: participantesChat,
+          fecha: fechaISO,
+          entregado: true,
+          leido: false,
+        });
+        
+        // Mensaje para el conductor (para que también lo vea)
+        await addDoc(collection(db, 'MensajesChat'), {
+          chatId,
+          texto: 'La solicitud para agregar al hijo ha sido rechazada.',
+          emisor: 'Sistema',
+          receptor: rutUsuario,
+          participantes: participantesChat,
+          fecha: fechaISO,
+          entregado: true,
+          leido: false,
+        });
+        
+        Alert.alert('Solicitud rechazada', 'La solicitud ha sido rechazada.');
+        router.back();
+        return;
+      }
+      
+      // Si es una postulación normal
       await addDoc(collection(db, 'ValidacionesPostulacion'), {
         idPostulacion,
         estado: 'rechazada',
-        fecha: new Date().toISOString(),
+        fecha: fechaISO,
       });
 
+      const receptorFinal = rutReceptor || rutUsuario;
+      
+      // Mensaje para el receptor
       await addDoc(collection(db, 'MensajesChat'), {
         idPostulacion,
         texto: 'La postulación ha sido rechazada.',
         emisor: 'Sistema',
-        receptor: rutReceptor || rutUsuario,
+        receptor: receptorFinal,
         participantes: participantesChat,
-        fecha: new Date().toISOString(),
+        fecha: fechaISO,
+        entregado: true,
+        leido: false,
       });
+      
+      // Mensaje para el conductor (si no es el receptor)
+      if (rutUsuario !== receptorFinal) {
+        await addDoc(collection(db, 'MensajesChat'), {
+          idPostulacion,
+          texto: 'La postulación ha sido rechazada.',
+          emisor: 'Sistema',
+          receptor: rutUsuario,
+          participantes: participantesChat,
+          fecha: fechaISO,
+          entregado: true,
+          leido: false,
+        });
+      }
 
       await updateDoc(doc(db, 'Postulaciones', idPostulacion), {
         estado: 'rechazada',
@@ -295,13 +827,119 @@ export default function ChatValidacion() {
       return;
     }
     try {
+      const fechaISO = new Date().toISOString();
+      const participantesChat = [rutUsuario, rutReceptor].filter(Boolean).sort();
+      
+      // Si es una alerta de AgregarHijo, obtener datos desde los parámetros
+      if (esAgregarHijo && params.rutHijo) {
+        const rutApoderadoAgregar = params.rutPadre as string;
+        const rutHijoAgregar = params.rutHijo as string;
+        const idHijoAgregar = rutHijoAgregar;
+        const idFurgonAgregar = params.idFurgon as string || '';
+        const patenteFurgonAgregar = params.patenteFurgon as string;
+        let nombreHijoAgregar = params.nombreHijo as string || '';
+        let nombreApoderadoAgregar = params.nombreApoderado as string || '';
+
+        // Cargar datos del hijo si no están disponibles
+        if (!hijo && rutHijoAgregar) {
+          try {
+            const hijoRef = doc(db, 'Hijos', rutHijoAgregar);
+            const hijoSnap = await getDoc(hijoRef);
+            if (hijoSnap.exists()) {
+              const hijoData = hijoSnap.data();
+              setHijo({ id: hijoSnap.id, ...hijoData });
+              if (!nombreHijoAgregar) {
+                nombreHijoAgregar = `${hijoData.nombres || ''} ${hijoData.apellidos || ''}`.trim();
+              }
+            }
+          } catch (error) {
+            console.error('Error al cargar datos del hijo:', error);
+          }
+        } else if (hijo && !nombreHijoAgregar) {
+          nombreHijoAgregar = `${hijo.nombres || ''} ${hijo.apellidos || ''}`.trim();
+        }
+
+        // Cargar datos del apoderado si no están disponibles
+        if (!datosApoderado && rutApoderadoAgregar) {
+          try {
+            const apoderadoRef = query(collection(db, 'usuarios'), where('rut', '==', rutApoderadoAgregar));
+            const apoderadoSnap = await getDocs(apoderadoRef);
+            if (!apoderadoSnap.empty) {
+              const apoderadoData = apoderadoSnap.docs[0].data();
+              setDatosApoderado(apoderadoData);
+              if (!nombreApoderadoAgregar) {
+                nombreApoderadoAgregar = `${apoderadoData.nombres || ''} ${apoderadoData.apellidos || ''}`.trim();
+              }
+            }
+          } catch (error) {
+            console.error('Error al cargar datos del apoderado:', error);
+          }
+        } else if (datosApoderado && !nombreApoderadoAgregar) {
+          nombreApoderadoAgregar = `${datosApoderado.nombres || ''} ${datosApoderado.apellidos || ''}`.trim();
+        }
+
+        if (!rutApoderadoAgregar || !rutHijoAgregar || !patenteFurgonAgregar) {
+          Alert.alert('Error', 'Faltan datos necesarios para completar la aceptación.');
+          return;
+        }
+
+        // Agregar el hijo a lista_pasajeros
+        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+        const payloadListaPasajeros = {
+          rutConductor: rutUsuario,
+          rutApoderado: rutApoderadoAgregar,
+          nombreApoderado: nombreApoderadoAgregar,
+          rutHijo: rutHijoAgregar,
+          nombreHijo: nombreHijoAgregar,
+          patenteFurgon: patenteFurgonAgregar,
+          idFurgon: idFurgonAgregar,
+          colegio: hijo?.colegio || '',
+          nombreFurgon: params.nombreFurgon as string || '',
+          fechaAceptacion: fechaISO,
+          estado: 'aceptada',
+          origen: 'agregar_hijo',
+        };
+
+        await addDoc(listaPasajerosRef, payloadListaPasajeros);
+
+        // Enviar mensaje de confirmación (uno para cada participante)
+        const chatId = `agregar_hijo_${rutHijoAgregar}_${rutApoderadoAgregar}_${rutUsuario}`;
+        
+        // Mensaje para el apoderado
+        await addDoc(collection(db, 'MensajesChat'), {
+          chatId,
+          texto: 'El hijo ha sido agregado exitosamente al furgón.',
+          emisor: 'Sistema',
+          receptor: rutApoderadoAgregar,
+          participantes: participantesChat,
+          fecha: fechaISO,
+          entregado: true,
+          leido: false,
+        });
+        
+        // Mensaje para el conductor (para que también lo vea)
+        await addDoc(collection(db, 'MensajesChat'), {
+          chatId,
+          texto: 'El hijo ha sido agregado exitosamente al furgón.',
+          emisor: 'Sistema',
+          receptor: rutUsuario,
+          participantes: participantesChat,
+          fecha: fechaISO,
+          entregado: true,
+          leido: false,
+        });
+
+        Alert.alert('Hijo agregado', 'El hijo ha sido agregado exitosamente al furgón.');
+        router.back();
+        return;
+      }
+
+      // Si es una postulación normal
       if (!postulacion) {
         Alert.alert('Error', 'No se encontraron los datos de la postulación.');
         return;
       }
 
-      const fechaISO = new Date().toISOString();
-      const participantesChat = [rutUsuario, rutReceptor].filter(Boolean).sort();
       const patenteFurgon = await obtenerPatenteFurgon();
 
       const rutApoderado = postulacion.rutUsuario || '';
@@ -340,67 +978,297 @@ export default function ChatValidacion() {
         return;
       }
 
+      // Buscar todas las postulaciones pendientes del mismo apoderado para el mismo furgón
+      const postulacionesRef = collection(db, 'Postulaciones');
+      
+      // Intentar buscar por patenteFurgon primero
+      let postulacionesRelacionadasSnap;
+      try {
+        const queryPorPatente = query(
+          postulacionesRef,
+          where('rutUsuario', '==', rutApoderado),
+          where('patenteFurgon', '==', patenteFurgon),
+          where('estado', '==', 'pendiente')
+        );
+        postulacionesRelacionadasSnap = await getDocs(queryPorPatente);
+        console.log('Postulaciones encontradas por patente:', postulacionesRelacionadasSnap.docs.length);
+      } catch (error) {
+        console.warn('Error al buscar por patente, intentando por idFurgon:', error);
+        // Si falla, buscar por idFurgon
+        if (idFurgon) {
+          try {
+            const queryPorFurgon = query(
+              postulacionesRef,
+              where('rutUsuario', '==', rutApoderado),
+              where('idFurgon', '==', idFurgon),
+              where('estado', '==', 'pendiente')
+            );
+            postulacionesRelacionadasSnap = await getDocs(queryPorFurgon);
+            console.log('Postulaciones encontradas por idFurgon:', postulacionesRelacionadasSnap.docs.length);
+          } catch (error2) {
+            console.warn('Error al buscar por idFurgon, buscando todas las pendientes del apoderado:', error2);
+            // Como último recurso, buscar todas las pendientes del apoderado y filtrar
+            const queryTodas = query(
+              postulacionesRef,
+              where('rutUsuario', '==', rutApoderado),
+              where('estado', '==', 'pendiente')
+            );
+            const todasSnap = await getDocs(queryTodas);
+            // Filtrar manualmente por patenteFurgon o idFurgon
+            const filtradas = todasSnap.docs.filter(doc => {
+              const data = doc.data();
+              return (data.patenteFurgon === patenteFurgon) || (data.idFurgon === idFurgon);
+            });
+            // Crear un objeto similar a un QuerySnapshot
+            postulacionesRelacionadasSnap = {
+              docs: filtradas,
+              empty: filtradas.length === 0,
+              size: filtradas.length
+            } as any;
+            console.log('Postulaciones encontradas después de filtrar:', filtradas.length);
+          }
+        } else {
+          // Si no hay idFurgon, buscar todas las pendientes del apoderado
+          const queryTodas = query(
+            postulacionesRef,
+            where('rutUsuario', '==', rutApoderado),
+            where('estado', '==', 'pendiente')
+          );
+          const todasSnap = await getDocs(queryTodas);
+          // Filtrar manualmente por patenteFurgon
+          const filtradas = todasSnap.docs.filter(doc => {
+            const data = doc.data();
+            return data.patenteFurgon === patenteFurgon;
+          });
+          postulacionesRelacionadasSnap = {
+            docs: filtradas,
+            empty: filtradas.length === 0,
+            size: filtradas.length
+          } as any;
+          console.log('Postulaciones encontradas después de filtrar (sin idFurgon):', filtradas.length);
+        }
+      }
+      
+      // Si no se encontraron postulaciones relacionadas, usar solo la postulación actual
+      if (postulacionesRelacionadasSnap.empty || postulacionesRelacionadasSnap.docs.length === 0) {
+        console.log('No se encontraron postulaciones relacionadas, procesando solo la postulación actual');
+        // Crear un array con solo la postulación actual
+        const postulacionActualDoc = await getDoc(doc(db, 'Postulaciones', idPostulacion));
+        if (postulacionActualDoc.exists()) {
+          postulacionesRelacionadasSnap = {
+            docs: [postulacionActualDoc],
+            empty: false,
+            size: 1
+          } as any;
+        } else {
+          postulacionesRelacionadasSnap = {
+            docs: [],
+            empty: true,
+            size: 0
+          } as any;
+        }
+      }
+      
       const listaPasajerosRef = collection(db, 'lista_pasajeros');
-      const listaExistenteQuery = query(listaPasajerosRef, where('idPostulacion', '==', idPostulacion));
-      const listaExistenteSnap = await getDocs(listaExistenteQuery);
-      const payloadListaPasajeros = {
-        idPostulacion,
-        idFurgon,
-        rutConductor: rutUsuario,
-        rutApoderado,
-        nombreApoderado,
-        rutHijo,
-        nombreHijo,
-        patenteFurgon,
-        colegio: postulacion.colegio || '',
-        nombreFurgon: postulacion.nombreFurgon || '',
-        fechaAceptacion: fechaISO,
-        estado: 'aceptada',
-      };
+      const hijosAgregados: string[] = [];
+      
+      console.log(`Procesando ${postulacionesRelacionadasSnap.docs.length} postulación(es) relacionada(s)`);
+      
+      // Procesar todas las postulaciones relacionadas
+      for (const postulacionDoc of postulacionesRelacionadasSnap.docs) {
+        const postulacionData = postulacionDoc.data();
+        const postulacionId = postulacionDoc.id;
+        const rutHijoPostulacion = postulacionData.rutHijo || '';
+        const idHijoPostulacion = postulacionData.idHijo || '';
+        
+        if (!rutHijoPostulacion) continue;
+        
+        // Obtener datos del hijo
+        let nombreHijoPostulacion = '';
+        let colegioPostulacion = postulacionData.colegio || '';
+        if (idHijoPostulacion) {
+          try {
+            const hijoRef = doc(db, 'Hijos', idHijoPostulacion);
+            const hijoSnap = await getDoc(hijoRef);
+            if (hijoSnap.exists()) {
+              const hijoData = hijoSnap.data();
+              nombreHijoPostulacion = `${hijoData.nombres || ''} ${hijoData.apellidos || ''}`.trim();
+              if (!colegioPostulacion) {
+                colegioPostulacion = hijoData.colegio || '';
+              }
+            }
+          } catch (error) {
+            console.error('Error al cargar datos del hijo:', error);
+          }
+        }
+        
+        // Verificar si ya existe en lista_pasajeros
+        const listaExistenteQuery = query(
+          listaPasajerosRef,
+          where('idPostulacion', '==', postulacionId)
+        );
+        const listaExistenteSnap = await getDocs(listaExistenteQuery);
+        
+        const payloadListaPasajeros = {
+          idPostulacion: postulacionId,
+          idFurgon: postulacionData.idFurgon || idFurgon,
+          rutConductor: rutUsuario,
+          rutApoderado,
+          nombreApoderado,
+          rutHijo: rutHijoPostulacion,
+          nombreHijo: nombreHijoPostulacion || 'Sin nombre',
+          patenteFurgon,
+          colegio: colegioPostulacion || postulacionData.colegio || '',
+          nombreFurgon: postulacionData.nombreFurgon || postulacion.nombreFurgon || '',
+          fechaAceptacion: fechaISO,
+          estado: 'aceptada',
+        };
 
-      if (listaExistenteSnap.empty) {
-        await addDoc(listaPasajerosRef, payloadListaPasajeros);
-      } else {
-        await updateDoc(listaExistenteSnap.docs[0].ref, payloadListaPasajeros);
+        if (listaExistenteSnap.empty) {
+          await addDoc(listaPasajerosRef, payloadListaPasajeros);
+          hijosAgregados.push(nombreHijoPostulacion || rutHijoPostulacion);
+          console.log(`✓ Hijo agregado a lista_pasajeros: ${nombreHijoPostulacion || rutHijoPostulacion}`);
+        } else {
+          await updateDoc(listaExistenteSnap.docs[0].ref, payloadListaPasajeros);
+          hijosAgregados.push(nombreHijoPostulacion || rutHijoPostulacion);
+          console.log(`✓ Hijo actualizado en lista_pasajeros: ${nombreHijoPostulacion || rutHijoPostulacion}`);
+        }
+        
+        // Actualizar el estado de la postulación
+        await updateDoc(doc(db, 'Postulaciones', postulacionId), {
+          estado: 'aceptada',
+          rutConductor: rutUsuario,
+          patenteFurgon,
+          fechaAceptacion: fechaISO,
+        });
+        console.log(`✓ Postulación ${postulacionId} marcada como aceptada`);
+      }
+      
+      console.log(`Total de hijos agregados: ${hijosAgregados.length}`);
+
+      // Eliminar/marcar como revisadas las alertas relacionadas con las postulaciones aceptadas
+      try {
+        const alertasRef = collection(db, 'Alertas');
+        // Buscar alertas por rutDestinatario normalizado y original
+        const normalizarRut = (rut: string) => rut.replace(/[^0-9kK]/g, '').toUpperCase();
+        const rutUsuarioNormalizado = normalizarRut(rutUsuario);
+        
+        // Buscar alertas que coincidan con el conductor (normalizado o original)
+        const alertasQuery1 = query(
+          alertasRef,
+          where('tipoAlerta', '==', 'Postulacion')
+        );
+        const todasLasAlertas = await getDocs(alertasQuery1);
+        
+        const batchAlertas = writeBatch(db);
+        let alertasActualizadas = 0;
+        
+        todasLasAlertas.docs.forEach((alertaDoc) => {
+          const alertaData = alertaDoc.data();
+          const rutDestinatario = alertaData.rutDestinatario || '';
+          const rutDestinatarioOriginal = alertaData.rutDestinatarioOriginal || '';
+          const rutDestinatarioNormalizado = normalizarRut(rutDestinatario);
+          
+          // Verificar si la alerta es para este conductor (comparar normalizado y original)
+          const esParaEsteConductor = 
+            rutDestinatario === rutUsuario ||
+            rutDestinatarioOriginal === rutUsuario ||
+            rutDestinatarioNormalizado === rutUsuarioNormalizado;
+          
+          if (!esParaEsteConductor) return;
+          
+          const parametros = alertaData.parametros || {};
+          const idPostulacionAlerta = parametros.idPostulacion;
+          
+          // Verificar si esta alerta corresponde a alguna de las postulaciones aceptadas
+          const esPostulacionAceptada = postulacionesRelacionadasSnap.docs.some(
+            (postDoc: any) => postDoc.id === idPostulacionAlerta
+          );
+          
+          if (esPostulacionAceptada) {
+            // Marcar la alerta como revisada
+            batchAlertas.update(alertaDoc.ref, {
+              revisado: true,
+              fechaRevision: fechaISO,
+            });
+            alertasActualizadas++;
+          }
+        });
+        
+        if (alertasActualizadas > 0) {
+          await batchAlertas.commit();
+          console.log(`✓ ${alertasActualizadas} alerta(s) marcada(s) como revisada(s) y eliminada(s) del conductor`);
+        }
+      } catch (error) {
+        console.error('Error al actualizar alertas:', error);
       }
 
-      const postulacionFurgonQuery = query(
-        collection(db, 'postulacion_furgon'),
-        where('postulacionDocId', '==', idPostulacion),
-      );
-      const postulacionFurgonSnap = await getDocs(postulacionFurgonQuery);
-      if (!postulacionFurgonSnap.empty) {
-        await updateDoc(postulacionFurgonSnap.docs[0].ref, {
+      // Procesar postulacion_furgon y ValidacionesPostulacion para todas las postulaciones relacionadas
+      for (const postulacionDoc of postulacionesRelacionadasSnap.docs) {
+        const postulacionId = postulacionDoc.id;
+        
+        const postulacionFurgonQuery = query(
+          collection(db, 'postulacion_furgon'),
+          where('postulacionDocId', '==', postulacionId),
+        );
+        const postulacionFurgonSnap = await getDocs(postulacionFurgonQuery);
+        if (!postulacionFurgonSnap.empty) {
+          await updateDoc(postulacionFurgonSnap.docs[0].ref, {
+            estado: 'aceptada',
+            fecha: fechaISO,
+            rutConductor: rutUsuario,
+          });
+        }
+
+        await addDoc(collection(db, 'ValidacionesPostulacion'), {
+          idPostulacion: postulacionId,
           estado: 'aceptada',
           fecha: fechaISO,
-          rutConductor: rutUsuario,
         });
       }
 
-      await addDoc(collection(db, 'ValidacionesPostulacion'), {
-        idPostulacion,
-        estado: 'aceptada',
-        fecha: fechaISO,
-      });
-
+      const receptorFinal = rutReceptor || rutUsuario;
+      const mensajeTexto = 'La postulación ha sido aprobada.';
+      
+      // Mensaje solo para el receptor (apoderado) - usar el idPostulacion original para mantener el chat
       await addDoc(collection(db, 'MensajesChat'), {
         idPostulacion,
-        texto: 'La postulación ha sido aprobada.',
+        texto: mensajeTexto,
         emisor: 'Sistema',
-        receptor: rutReceptor || rutUsuario,
+        receptor: receptorFinal,
         participantes: participantesChat,
         fecha: fechaISO,
+        entregado: true,
+        leido: false,
       });
+      
+      // Mensaje para el conductor (si no es el receptor) - solo si es diferente
+      if (rutUsuario !== receptorFinal) {
+        await addDoc(collection(db, 'MensajesChat'), {
+          idPostulacion,
+          texto: mensajeTexto,
+          emisor: 'Sistema',
+          receptor: rutUsuario,
+          participantes: participantesChat,
+          fecha: fechaISO,
+          entregado: true,
+          leido: false,
+        });
+      }
 
-      await updateDoc(doc(db, 'Postulaciones', idPostulacion), {
-        estado: 'aceptada',
-        rutConductor: rutUsuario,
-        patenteFurgon,
-        fechaAceptacion: fechaISO,
-      });
-
-      Alert.alert('Postulación aprobada');
-      router.back();
+      const mensajeAlerta = hijosAgregados.length > 1
+        ? `Se han aprobado ${hijosAgregados.length} postulaciones y agregado ${hijosAgregados.length} hijo(s) al furgón.`
+        : 'Postulación aprobada';
+      
+      Alert.alert('Postulación aprobada', mensajeAlerta);
+      
+      // Si el usuario actual es el apoderado (receptor), redirigir a la página principal
+      const rutUsuarioActual = await AsyncStorage.getItem('rutUsuario');
+      if (rutUsuarioActual === receptorFinal) {
+        router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
+      } else {
+        router.back();
+      }
     } catch (error) {
       console.error('Error al aceptar:', error);
     }
@@ -408,6 +1276,11 @@ export default function ChatValidacion() {
 
   const participantesConversacion = [rutUsuario, rutReceptor].filter(Boolean);
   const mensajesFiltrados = mensajes.filter((item) => {
+    // Excluir mensajes eliminados por el usuario
+    if (mensajesEliminados.has(item.id)) {
+      return false;
+    }
+    
     const emisor = item.emisor as string | undefined;
     const receptor = item.receptor as string | undefined;
     const participantesMensaje: string[] = Array.isArray(item.participantes)
@@ -418,24 +1291,34 @@ export default function ChatValidacion() {
       return false;
     }
 
+    // Mensajes del sistema: deben ser para el usuario actual
+    if (emisor === 'Sistema') {
+      return receptor === rutUsuario;
+    }
+
+    // Si no hay rutReceptor (chat de AgregarHijo), mostrar todos los mensajes
+    // donde el usuario es emisor o receptor
     if (!rutReceptor) {
       return emisor === rutUsuario || receptor === rutUsuario;
     }
 
+    // Si hay rutReceptor (chat normal), verificar conversación directa
     const esConversacionDirecta =
       (emisor === rutUsuario && receptor === rutReceptor) ||
       (emisor === rutReceptor && receptor === rutUsuario);
 
-    if (esConversacionDirecta) {
-      return true;
-    }
-
-    if (emisor === 'Sistema') {
-      return participantesConversacion.every((p) => participantesMensaje.includes(p));
-    }
-
-    return false;
+    return esConversacionDirecta;
   });
+
+  // Hacer scroll al final cuando se cargan los mensajes
+  useEffect(() => {
+    if (mensajesFiltrados.length > 0) {
+      // Pequeño delay para asegurar que el FlatList esté renderizado
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 100);
+    }
+  }, [mensajesFiltrados.length]);
 
   return (
     <View style={styles.container}>
@@ -447,7 +1330,43 @@ export default function ChatValidacion() {
           <Ionicons name="person-circle-outline" size={28} color="#fff" />
           <Text style={styles.headerText}>{nombreReceptor}</Text>
         </View>
-        <Ionicons name="chatbubble-ellipses-outline" size={28} color="#fff" />
+        <TouchableOpacity 
+          style={styles.menuButton} 
+          onPress={() => setMenuVisible(true)}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={28} color="#fff" />
+        </TouchableOpacity>
+        
+        {/* Menú desplegable */}
+        <Modal
+          visible={menuVisible}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setMenuVisible(false)}
+        >
+          <Pressable 
+            style={styles.menuOverlay} 
+            onPress={() => setMenuVisible(false)}
+          >
+            <Pressable 
+              style={styles.menuContainer}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleLimpiarChat();
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="trash-outline" size={20} color="#333" />
+                <Text style={styles.menuItemText}>Limpiar chat</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
       </View>
 
       {cargandoAuth && (
@@ -462,15 +1381,20 @@ export default function ChatValidacion() {
             <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#a94442' }}>
               Problema urgente con: {hijo.nombres} {hijo.apellidos}
             </Text>
-          ) : (
+          ) : mostrarBotonesValidacion ? (
             <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#127067' }}>
               Postulación de: {hijo.nombres} {hijo.apellidos}
+            </Text>
+          ) : (
+            <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#127067' }}>
+              Chat con: {hijo.nombres} {hijo.apellidos}
             </Text>
           )}
         </View>
       )}
 
       <FlatList
+        ref={flatListRef}
         data={mensajesFiltrados}
         keyExtractor={(item, index) =>
           typeof item.id === 'string' ? item.id : index.toString()
@@ -483,15 +1407,37 @@ export default function ChatValidacion() {
             ]}
           >
             <Text style={styles.mensajeTexto}>{item.texto}</Text>
-            <Text style={styles.mensajeMeta}>
-              {item.emisor} • {new Date(item.fecha).toLocaleTimeString('es-CL', {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </Text>
+            <View style={styles.mensajeMetaContainer}>
+              <Text style={styles.mensajeMeta}>
+                {item.emisor === 'Sistema' ? 'Sistema' : ''} {item.emisor === 'Sistema' ? '• ' : ''}{new Date(item.fecha).toLocaleTimeString('es-CL', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </Text>
+              {/* Indicadores de lectura tipo WhatsApp - solo para mensajes propios */}
+              {item.emisor === rutUsuario && item.emisor !== 'Sistema' && (
+                <View style={styles.checkContainer}>
+                  {item.leido ? (
+                    <Ionicons name="checkmark-done" size={16} color="#4FC3F7" />
+                  ) : item.entregado ? (
+                    <Ionicons name="checkmark-done" size={16} color="#999" />
+                  ) : (
+                    <Ionicons name="checkmark" size={16} color="#999" />
+                  )}
+                </View>
+              )}
+            </View>
           </View>
         )}
         style={styles.chatArea}
+        onContentSizeChange={() => {
+          // Hacer scroll al final cuando el contenido cambia
+          flatListRef.current?.scrollToEnd({ animated: false });
+        }}
+        onLayout={() => {
+          // Hacer scroll al final cuando el layout se carga
+          flatListRef.current?.scrollToEnd({ animated: false });
+        }}
       />
 
       <View style={styles.inputArea}>
@@ -507,7 +1453,7 @@ export default function ChatValidacion() {
         </TouchableHighlight>
       </View>
 
-      {rolUsuario === 'conductor' && !esChatUrgencia && (
+      {mostrarBotonesValidacion && (
         <View style={styles.botonesValidacion}>
           <TouchableHighlight style={styles.aceptarButton} onPress={aceptarPostulacion} underlayColor="#0c5c4e">
             <Text style={styles.accionText}>Aceptar</Text>
@@ -570,10 +1516,50 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#333',
   },
+  mensajeMetaContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
   mensajeMeta: {
     fontSize: 10,
     color: '#888',
-    marginTop: 4,
+  },
+  checkContainer: {
+    marginLeft: 4,
+  },
+  menuButton: {
+    padding: 4,
+  },
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+    paddingTop: 60,
+    paddingRight: 16,
+  },
+  menuContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 8,
+    minWidth: 150,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 4,
+  },
+  menuItemText: {
+    fontSize: 16,
+    color: '#333',
+    marginLeft: 12,
   },
   inputArea: {
     flexDirection: 'row',
