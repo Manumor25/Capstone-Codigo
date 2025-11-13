@@ -282,12 +282,28 @@ export default function RegisterScreen() {
 
     if (Object.values(nuevosErrores).some((msg) => msg !== '')) return;
 
+    // Normalizar el correo a minúsculas para verificación y guardado
+    const correoNormalizado = correo.trim().toLowerCase();
+
     try {
-      // Verificar si el correo ya existe en Firestore
+      // Verificar si el correo ya existe en Firestore (case-insensitive)
       const usuariosRef = collection(db, 'usuarios');
-      const q = query(usuariosRef, where('correo', '==', correo));
-      const querySnapshot = await getDocs(q);
-      if (!querySnapshot.empty) {
+      
+      // Primero intentar buscar con el correo normalizado (minúsculas)
+      let q = query(usuariosRef, where('correo', '==', correoNormalizado));
+      let querySnapshot = await getDocs(q);
+      
+      // Si no se encuentra, buscar todos los usuarios y filtrar en el cliente
+      // (esto maneja el caso donde el correo está guardado con mayúsculas)
+      let correoExiste = !querySnapshot.empty;
+      if (!correoExiste) {
+        const allUsersSnapshot = await getDocs(usuariosRef);
+        correoExiste = allUsersSnapshot.docs.some(
+          (doc) => doc.data().correo?.toLowerCase() === correoNormalizado
+        );
+      }
+      
+      if (correoExiste) {
         setErrores((prev) => ({ ...prev, correo: 'Este correo ya está registrado.' }));
         return;
       }
@@ -302,7 +318,7 @@ export default function RegisterScreen() {
     const usuario = {
       nombres,
       apellidos,
-      correo,
+      correo: correoNormalizado, // Guardar correo en minúsculas para consistencia
       telefono,
       contrasena,
       rut: rutNormalizado, // Guardar RUT sin espacios para consistencia

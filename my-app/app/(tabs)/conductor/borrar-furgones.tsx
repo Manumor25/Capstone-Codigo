@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Pressable,
   Platform,
+  Modal,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,25 +18,33 @@ import { db } from '@/firebaseConfig';
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { makeShadow } from '@/utils/shadow';
 
-interface Furgon {
+interface VehiculoInfo {
   id: string;
-  nombre: string;
-  colegio: string;
-  comuna: string;
-  precio: string;
   patente: string;
+  modelo: string;
+  ano: string;
+  nombre?: string;
+  colegio?: string;
+  comuna?: string;
+  precio: string;
+  numNinosInscritos: number;
+  furgonId?: string; // ID del furgón asociado si existe
 }
 
 export default function BorrarFurgonesScreen() {
   const router = useRouter();
   useSyncRutActivo();
-  const [furgones, setFurgones] = useState<Furgon[]>([]);
+  const [vehiculos, setVehiculos] = useState<VehiculoInfo[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [rutUsuario, setRutUsuario] = useState<string>('');
   const [borrandoId, setBorrandoId] = useState<string | null>(null);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [vehiculoAEliminar, setVehiculoAEliminar] = useState<VehiculoInfo | null>(null);
+  const [modalAdvertenciaVisible, setModalAdvertenciaVisible] = useState(false);
+  const resolveEliminacionRef = useRef<((value: boolean) => void) | null>(null);
 
   useEffect(() => {
-    const cargarFurgonesPropios = async () => {
+    const cargarVehiculosCompletos = async () => {
       try {
         const rutGuardado = await AsyncStorage.getItem('rutUsuario');
         if (!rutGuardado) {
@@ -45,122 +54,114 @@ export default function BorrarFurgonesScreen() {
         }
         setRutUsuario(rutGuardado);
 
-        const furgonesRef = collection(db, 'Furgones');
-        const q = query(furgonesRef, where('rutUsuario', '==', rutGuardado));
-        const snapshot = await getDocs(q);
+        // Obtener todos los vehículos del usuario
+        const vehiculosRef = collection(db, 'Vehiculos');
+        const vehiculosQuery = query(vehiculosRef, where('rutUsuario', '==', rutGuardado));
+        const vehiculosSnapshot = await getDocs(vehiculosQuery);
 
-        const lista: Furgon[] = snapshot.docs.map((docSnap) => {
-          const data = docSnap.data() || {};
+        // Obtener todos los furgones para mapear por patente
+        const furgonesRef = collection(db, 'Furgones');
+        const furgonesSnapshot = await getDocs(furgonesRef);
+        
+        // Crear un mapa de patente -> furgón
+        const furgonesPorPatente = new Map<string, any>();
+        furgonesSnapshot.docs.forEach((doc) => {
+          const data = doc.data();
+          const patente = (data.patente || '').toString().trim().toUpperCase();
+          if (patente) {
+            furgonesPorPatente.set(patente, {
+              id: doc.id,
+              nombre: data.nombre || '',
+              colegio: data.colegio || '',
+              comuna: data.comuna || '',
+              precio: data.precio || '0',
+            });
+          }
+        });
+
+        // Obtener todos los pasajeros para contar por patente
+        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+        const pasajerosSnapshot = await getDocs(listaPasajerosRef);
+        
+        // Contar pasajeros por patente
+        const pasajerosPorPatente = new Map<string, number>();
+        pasajerosSnapshot.docs.forEach((doc) => {
+          const data = doc.data();
+          const patente = (data.patenteFurgon || '').toString().trim().toUpperCase();
+          const rutConductor = (data.rutConductor || '').toString().trim();
+          
+          // Solo contar si el conductor coincide
+          if (patente && rutConductor === rutGuardado) {
+            pasajerosPorPatente.set(patente, (pasajerosPorPatente.get(patente) || 0) + 1);
+          }
+        });
+
+        // Construir la lista de vehículos con toda la información
+        const listaVehiculos: VehiculoInfo[] = vehiculosSnapshot.docs.map((doc) => {
+          const data = doc.data();
+          const patente = (data.patente || '').toString().trim().toUpperCase();
+          const furgon = furgonesPorPatente.get(patente);
+          const numNinos = pasajerosPorPatente.get(patente) || 0;
+
           return {
-            id: docSnap.id,
-            nombre: data.nombre || 'Sin nombre',
-            colegio: data.colegio || 'Sin colegio',
-            comuna: data.comuna || 'Sin comuna',
-            precio: data.precio || 'No definido',
-            patente: data.patente || 'Sin patente',
+            id: doc.id,
+            patente: patente || 'Sin patente',
+            modelo: data.modelo || 'Sin modelo',
+            ano: data.ano || 'No disponible',
+            nombre: furgon?.nombre,
+            colegio: furgon?.colegio,
+            comuna: furgon?.comuna,
+            precio: furgon?.precio || '0',
+            numNinosInscritos: numNinos,
+            furgonId: furgon?.id,
           };
         });
 
-        setFurgones(lista);
+        console.log('Total de vehículos encontrados:', listaVehiculos.length);
+        setVehiculos(listaVehiculos);
       } catch (error) {
-        console.error('Error al cargar furgones del conductor:', error);
-        Alert.alert('Error', 'No se pudieron cargar los furgones.');
+        console.error('Error al cargar vehículos:', error);
+        Alert.alert('Error', 'No se pudieron cargar los vehículos.');
       } finally {
         setLoading(false);
       }
     };
 
-    cargarFurgonesPropios();
+    cargarVehiculosCompletos();
   }, []);
 
-  const handleBorrarFurgon = async (furgon: Furgon) => {
-    console.log('handleBorrarFurgon llamado con furgón:', furgon);
-    
-    // En web, usar window.confirm; en móvil, usar Alert.alert
-    if (Platform.OS === 'web') {
-      const confirmar = window.confirm(
-        `¿Estás seguro de que deseas eliminar el furgón "${furgon.nombre}"?\n\nPatente: ${furgon.patente}\nColegio: ${furgon.colegio}\n\nEsta acción eliminará permanentemente el registro del furgón de la base de datos y no se puede deshacer.`
-      );
-      
-      if (!confirmar) {
-        console.log('Eliminación cancelada por el usuario');
-        return;
-      }
-    } else {
-      Alert.alert(
-        'Confirmar eliminación',
-        `¿Estás seguro de que deseas eliminar el furgón "${furgon.nombre}"?\n\nPatente: ${furgon.patente}\nColegio: ${furgon.colegio}\n\nEsta acción eliminará permanentemente el registro del furgón de la base de datos y no se puede deshacer.`,
-        [
-          {
-            text: 'Cancelar',
-            style: 'cancel',
-            onPress: () => {
-              console.log('Eliminación cancelada por el usuario');
-            },
-          },
-          {
-            text: 'Eliminar',
-            style: 'destructive',
-            onPress: async () => {
-              await procesarEliminacion(furgon);
-            },
-          },
-        ],
-        { cancelable: true }
-      );
-      return;
-    }
-    
-    // Si estamos en web y confirmó, proceder directamente
-    await procesarEliminacion(furgon);
+  const handleBorrarVehiculo = (vehiculo: VehiculoInfo) => {
+    console.log('handleBorrarVehiculo llamado con vehículo:', vehiculo);
+    setVehiculoAEliminar(vehiculo);
+    setModalVisible(true);
   };
 
-  const procesarEliminacion = async (furgon: Furgon) => {
-    console.log('Usuario confirmó eliminar, furgón ID:', furgon.id);
+  const confirmarEliminacion = async () => {
+    if (!vehiculoAEliminar) return;
+    setModalVisible(false);
+    await procesarEliminacion(vehiculoAEliminar);
+  };
+
+  const cancelarEliminacion = () => {
+    setModalVisible(false);
+    setVehiculoAEliminar(null);
+  };
+
+  const procesarEliminacion = async (vehiculo: VehiculoInfo) => {
+    console.log('Usuario confirmó eliminar, vehículo ID:', vehiculo.id);
     try {
-      setBorrandoId(furgon.id);
+      setBorrandoId(vehiculo.id);
       
-      // Verificar si hay pasajeros asociados a este furgón
-      const listaPasajerosRef = collection(db, 'lista_pasajeros');
-      const pasajerosQuery = query(
-        listaPasajerosRef,
-        where('patenteFurgon', '==', furgon.patente),
-        where('rutConductor', '==', rutUsuario)
-      );
-      const pasajerosSnapshot = await getDocs(pasajerosQuery);
-      
-      console.log('Pasajeros encontrados:', pasajerosSnapshot.docs.length);
-      
-      if (!pasajerosSnapshot.empty) {
-        const continuar = Platform.OS === 'web' 
-          ? window.confirm(
-              `Este furgón tiene ${pasajerosSnapshot.docs.length} pasajero(s) asociado(s). ¿Deseas continuar con la eliminación?`
-            )
-          : await new Promise<boolean>((resolve) => {
-              Alert.alert(
-                'Advertencia',
-                `Este furgón tiene ${pasajerosSnapshot.docs.length} pasajero(s) asociado(s). ¿Deseas continuar con la eliminación?`,
-                [
-                  {
-                    text: 'Cancelar',
-                    style: 'cancel',
-                    onPress: () => {
-                      console.log('Eliminación cancelada por pasajeros asociados');
-                      setBorrandoId(null);
-                      resolve(false);
-                    },
-                  },
-                  {
-                    text: 'Eliminar de todos modos',
-                    style: 'destructive',
-                    onPress: () => {
-                      console.log('Eliminando furgón a pesar de pasajeros asociados');
-                      resolve(true);
-                    },
-                  },
-                ]
-              );
-            });
+      // Verificar si hay pasajeros asociados a este vehículo
+      if (vehiculo.numNinosInscritos > 0) {
+        // Mostrar modal de advertencia
+        const continuar = await new Promise<boolean>((resolve) => {
+          resolveEliminacionRef.current = resolve;
+          setModalAdvertenciaVisible(true);
+        });
+        
+        setModalAdvertenciaVisible(false);
+        resolveEliminacionRef.current = null;
         
         if (!continuar) {
           setBorrandoId(null);
@@ -168,49 +169,45 @@ export default function BorrarFurgonesScreen() {
         }
       }
       
-      console.log('No hay pasajeros asociados o usuario confirmó, eliminando directamente');
-      await eliminarFurgon(furgon);
+      console.log('No hay niños inscritos o usuario confirmó, eliminando directamente');
+      await eliminarVehiculo(vehiculo);
     } catch (error) {
       console.error('Error al verificar pasajeros:', error);
-      if (Platform.OS === 'web') {
-        window.alert('Error: No se pudo verificar los pasajeros asociados.');
-      } else {
-        Alert.alert('Error', 'No se pudo verificar los pasajeros asociados.');
-      }
+      Alert.alert('Error', 'No se pudo verificar los pasajeros asociados.');
       setBorrandoId(null);
     }
   };
 
-  const eliminarFurgon = async (furgon: Furgon) => {
-    console.log('eliminarFurgon llamado, ID:', furgon.id);
+  const eliminarVehiculo = async (vehiculo: VehiculoInfo) => {
+    console.log('eliminarVehiculo llamado, ID:', vehiculo.id);
     try {
-      // Eliminar el furgón de la colección Furgones
-      const furgonRef = doc(db, 'Furgones', furgon.id);
-      console.log('Intentando eliminar documento:', furgonRef.path);
-      
-      await deleteDoc(furgonRef);
-      console.log('Documento eliminado exitosamente');
+      // Eliminar el vehículo de la colección Vehiculos
+      const vehiculoRef = doc(db, 'Vehiculos', vehiculo.id);
+      console.log('Intentando eliminar vehículo:', vehiculoRef.path);
+      await deleteDoc(vehiculoRef);
+      console.log('Vehículo eliminado exitosamente');
+
+      // Si tiene un furgón asociado, también eliminarlo
+      if (vehiculo.furgonId) {
+        const furgonRef = doc(db, 'Furgones', vehiculo.furgonId);
+        console.log('Intentando eliminar furgón asociado:', furgonRef.path);
+        await deleteDoc(furgonRef);
+        console.log('Furgón asociado eliminado exitosamente');
+      }
 
       // Actualizar la lista local
-      setFurgones((prevFurgones) => {
-        const nuevaLista = prevFurgones.filter((f) => f.id !== furgon.id);
-        console.log('Lista actualizada, quedan:', nuevaLista.length, 'furgones');
+      setVehiculos((prevVehiculos) => {
+        const nuevaLista = prevVehiculos.filter((v) => v.id !== vehiculo.id);
+        console.log('Lista actualizada, quedan:', nuevaLista.length, 'vehículos');
         return nuevaLista;
       });
       
-      if (Platform.OS === 'web') {
-        window.alert(`Éxito: El furgón "${furgon.nombre}" ha sido eliminado correctamente de la base de datos.`);
-      } else {
-        Alert.alert('Éxito', `El furgón "${furgon.nombre}" ha sido eliminado correctamente de la base de datos.`);
-      }
+      const nombreVehiculo = vehiculo.nombre || vehiculo.patente;
+      Alert.alert('Éxito', `El vehículo "${nombreVehiculo}" ha sido eliminado correctamente de la base de datos.`);
     } catch (error) {
-      console.error('Error al borrar el furgón:', error);
+      console.error('Error al borrar el vehículo:', error);
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
-      if (Platform.OS === 'web') {
-        window.alert(`Error: No se pudo eliminar el furgón de la base de datos. ${errorMessage}`);
-      } else {
-        Alert.alert('Error', `No se pudo eliminar el furgón de la base de datos. Error: ${errorMessage}`);
-      }
+      Alert.alert('Error', `No se pudo eliminar el vehículo de la base de datos. Error: ${errorMessage}`);
     } finally {
       setBorrandoId(null);
     }
@@ -224,23 +221,31 @@ export default function BorrarFurgonesScreen() {
     }
   };
 
-  const renderItem = ({ item }: { item: Furgon }) => {
+  const renderItem = ({ item }: { item: VehiculoInfo }) => {
     const isBorrando = borrandoId === item.id;
+    const nombreDisplay = item.nombre || item.patente;
+    const precioDisplay = item.precio && item.precio !== '0' ? `$${item.precio} CLP` : 'No publicado';
     
     return (
       <View style={styles.card}>
         <View style={styles.headerCard}>
-          <Ionicons name="bus-outline" size={32} color="#127067" />
+          <Ionicons name="car-outline" size={32} color="#127067" />
           <View style={styles.infoContainer}>
-            <Text style={styles.name}>{item.nombre}</Text>
-            <Text style={styles.subInfo}>{item.colegio}</Text>
+            <Text style={styles.name}>{nombreDisplay}</Text>
+            {item.modelo && <Text style={styles.subInfo}>{item.modelo} - {item.ano}</Text>}
+            {item.colegio && <Text style={styles.subInfo}>{item.colegio}</Text>}
           </View>
         </View>
         <View style={styles.infoRow}>
           <Text style={styles.info}>Patente: {item.patente}</Text>
-          <Text style={styles.info}>Comuna: {item.comuna}</Text>
+          {item.comuna && <Text style={styles.info}>Comuna: {item.comuna}</Text>}
         </View>
-        <Text style={styles.price}>Precio mensual: ${item.precio} CLP</Text>
+        <View style={styles.infoRow}>
+          <Text style={styles.price}>Precio: {precioDisplay}</Text>
+          <Text style={styles.ninosInfo}>
+            Niños inscritos: {item.numNinosInscritos}
+          </Text>
+        </View>
         
         <Pressable
           style={({ pressed }) => [
@@ -252,13 +257,13 @@ export default function BorrarFurgonesScreen() {
             if (e) {
               e.stopPropagation();
             }
-            console.log('Botón Eliminar presionado para:', item.nombre, 'ID:', item.id);
+            console.log('Botón Eliminar presionado para:', nombreDisplay, 'ID:', item.id);
             if (!isBorrando) {
-              handleBorrarFurgon(item);
+              handleBorrarVehiculo(item);
             }
           }}
           onPressIn={() => {
-            console.log('Botón presionado (onPressIn) para:', item.nombre);
+            console.log('Botón presionado (onPressIn) para:', nombreDisplay);
           }}
           disabled={isBorrando}
         >
@@ -279,20 +284,20 @@ export default function BorrarFurgonesScreen() {
     return (
       <View style={styles.feedbackContainer}>
         <ActivityIndicator size="large" color="#127067" />
-        <Text style={styles.feedbackText}>Cargando furgones...</Text>
+        <Text style={styles.feedbackText}>Cargando vehículos...</Text>
       </View>
     );
   }
 
-  if (furgones.length === 0) {
+  if (vehiculos.length === 0) {
     return (
       <View style={styles.container}>
         <Pressable style={styles.backButton} onPress={handleVolver}>
           <Ionicons name="arrow-back" size={28} color="#127067" />
         </Pressable>
         <View style={styles.feedbackContainer}>
-          <Ionicons name="bus-outline" size={60} color="#999" />
-          <Text style={styles.feedbackText}>No tienes furgones registrados</Text>
+          <Ionicons name="car-outline" size={60} color="#999" />
+          <Text style={styles.feedbackText}>No tienes vehículos registrados</Text>
         </View>
       </View>
     );
@@ -306,17 +311,115 @@ export default function BorrarFurgonesScreen() {
       
       <View style={styles.header}>
         <Ionicons name="trash-outline" size={32} color="#d32f2f" />
-        <Text style={styles.title}>Eliminar Furgones</Text>
+        <Text style={styles.title}>Eliminar Vehículos</Text>
       </View>
-      <Text style={styles.subtitle}>Selecciona un furgón para eliminarlo</Text>
+      <Text style={styles.subtitle}>Selecciona un vehículo para eliminarlo</Text>
 
       <FlatList
-        data={furgones}
+        data={vehiculos}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
       />
+
+      {/* Modal de confirmación de eliminación */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={modalVisible}
+        onRequestClose={cancelarEliminacion}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Confirmar eliminación</Text>
+            {vehiculoAEliminar && (
+              <>
+                <Text style={styles.modalMessage}>
+                  ¿Estás seguro de que deseas eliminar el vehículo?
+                </Text>
+                <View style={styles.modalDetails}>
+                  <Text style={styles.modalDetailText}>Patente: {vehiculoAEliminar.patente}</Text>
+                  <Text style={styles.modalDetailText}>Modelo: {vehiculoAEliminar.modelo}</Text>
+                  <Text style={styles.modalDetailText}>Niños inscritos: {vehiculoAEliminar.numNinosInscritos}</Text>
+                </View>
+                <Text style={styles.modalWarning}>
+                  Esta acción eliminará permanentemente el vehículo y su furgón asociado (si existe) de la base de datos y no se puede deshacer.
+                </Text>
+              </>
+            )}
+            <View style={styles.modalButtons}>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonCancel]}
+                onPress={cancelarEliminacion}
+              >
+                <Text style={styles.modalButtonTextCancel}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonDelete]}
+                onPress={confirmarEliminacion}
+              >
+                <Text style={styles.modalButtonTextDelete}>Eliminar</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal de advertencia por niños inscritos */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={modalAdvertenciaVisible}
+        onRequestClose={() => {
+          if (resolveEliminacionRef.current) {
+            resolveEliminacionRef.current(false);
+          }
+          setModalAdvertenciaVisible(false);
+          resolveEliminacionRef.current = null;
+          setBorrandoId(null);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Advertencia</Text>
+            {vehiculoAEliminar && (
+              <>
+                <Text style={styles.modalMessage}>
+                  Este vehículo tiene {vehiculoAEliminar.numNinosInscritos} niño(s) inscrito(s). ¿Deseas continuar con la eliminación?
+                </Text>
+              </>
+            )}
+            <View style={styles.modalButtons}>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonCancel]}
+                onPress={() => {
+                  if (resolveEliminacionRef.current) {
+                    resolveEliminacionRef.current(false);
+                  }
+                  setModalAdvertenciaVisible(false);
+                  resolveEliminacionRef.current = null;
+                  setBorrandoId(null);
+                }}
+              >
+                <Text style={styles.modalButtonTextCancel}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonDelete]}
+                onPress={() => {
+                  if (resolveEliminacionRef.current) {
+                    resolveEliminacionRef.current(true);
+                  }
+                  setModalAdvertenciaVisible(false);
+                  resolveEliminacionRef.current = null;
+                }}
+              >
+                <Text style={styles.modalButtonTextDelete}>Eliminar de todos modos</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -417,8 +520,15 @@ const styles = StyleSheet.create({
   price: {
     fontSize: 14,
     color: '#333',
-    marginTop: 6,
-    marginBottom: 12,
+    fontWeight: '600',
+    flex: 1,
+  },
+  ninosInfo: {
+    fontSize: 14,
+    color: '#127067',
+    fontWeight: '600',
+    flex: 1,
+    textAlign: 'right',
   },
   deleteButton: {
     flexDirection: 'row',
@@ -443,6 +553,88 @@ const styles = StyleSheet.create({
     opacity: 0.9,
   },
   deleteButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 24,
+    width: '85%',
+    maxWidth: 400,
+    elevation: 5,
+    ...makeShadow(
+      '0 4px 20px rgba(0,0,0,0.3)',
+      {
+        shadowColor: '#000',
+        shadowOpacity: 0.3,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 4 },
+      },
+    ),
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    fontSize: 16,
+    color: '#555',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  modalDetails: {
+    backgroundColor: '#F5F7F8',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  modalDetailText: {
+    fontSize: 14,
+    color: '#333',
+    marginBottom: 4,
+  },
+  modalWarning: {
+    fontSize: 14,
+    color: '#d32f2f',
+    marginBottom: 20,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modalButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modalButtonCancel: {
+    backgroundColor: '#e0e0e0',
+  },
+  modalButtonDelete: {
+    backgroundColor: '#d32f2f',
+  },
+  modalButtonTextCancel: {
+    color: '#333',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  modalButtonTextDelete: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',

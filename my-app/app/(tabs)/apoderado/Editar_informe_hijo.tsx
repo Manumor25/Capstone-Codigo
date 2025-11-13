@@ -224,7 +224,10 @@ export default function EditarInformeHijoScreen() {
 
   return (
     <View style={styles.container}>
-      <Pressable style={styles.backButton} onPress={() => router.back()}>
+      <Pressable 
+        style={styles.backButton} 
+        onPress={() => router.replace('/(tabs)/apoderado/perfil-apoderado')}
+      >
         <Ionicons name="arrow-back" size={28} color="#127067" />
       </Pressable>
 

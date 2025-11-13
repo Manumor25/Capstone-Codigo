@@ -34,13 +34,31 @@ export default function LoginScreen() {
 
     try {
       const usuariosRef = collection(db, 'usuarios');
-      const q = query(usuariosRef, where('correo', '==', correo.trim()));
-      const querySnapshot = await getDocs(q);
+      const correoNormalizado = correo.trim().toLowerCase();
+      
+      // Primero intentar buscar con el correo normalizado (minúsculas)
+      let q = query(usuariosRef, where('correo', '==', correoNormalizado));
+      let querySnapshot = await getDocs(q);
 
-      console.log('Usuarios encontrados:', querySnapshot.docs.length);
-
+      // Si no se encuentra, buscar todos los usuarios y filtrar en el cliente
+      // (esto maneja el caso donde el correo está guardado con mayúsculas)
+      let userData: Usuario | null = null;
       if (!querySnapshot.empty) {
-        const userData = querySnapshot.docs[0].data() as Usuario;
+        userData = querySnapshot.docs[0].data() as Usuario;
+      } else {
+        const allUsersSnapshot = await getDocs(usuariosRef);
+        const matchingDoc = allUsersSnapshot.docs.find(
+          (doc) => doc.data().correo?.toLowerCase() === correoNormalizado
+        );
+        
+        if (matchingDoc) {
+          userData = matchingDoc.data() as Usuario;
+        }
+      }
+
+      console.log('Usuarios encontrados:', userData ? 1 : 0);
+
+      if (userData) {
         console.log('Datos del usuario:', userData);
 
         // Validar contraseña

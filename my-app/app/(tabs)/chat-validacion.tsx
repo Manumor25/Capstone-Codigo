@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -69,14 +69,14 @@ export default function ChatValidacion() {
       setRutUsuario(rut);
       setRolUsuario(rol);
       
-      // Cargar mensajes eliminados por el usuario
+      // Cargar mensajes eliminados por el usuario (específico por usuario)
       try {
         let chatKey = '';
         if (idPostulacion) {
-          chatKey = `chat_eliminados_${idPostulacion}`;
+          chatKey = `chat_eliminados_${idPostulacion}_${rut}`;
         } else if (esAgregarHijo && params.rutHijo) {
           const chatId = `agregar_hijo_${params.rutHijo}_${params.rutPadre}_${params.rutConductor || rut}`;
-          chatKey = `chat_eliminados_${chatId}`;
+          chatKey = `chat_eliminados_${chatId}_${rut}`;
         }
         
         if (chatKey) {
@@ -120,7 +120,8 @@ export default function ChatValidacion() {
           if (!apoderadoSnap.empty) {
             const apoderadoData = apoderadoSnap.docs[0].data();
             setDatosApoderado(apoderadoData);
-            setNombreReceptor(nombreApoderado || `${apoderadoData.nombres || ''} ${apoderadoData.apellidos || ''}`.trim());
+            const nombre = nombreApoderado || `${apoderadoData.nombres || ''} ${apoderadoData.apellidos || ''}`.trim();
+            setNombreReceptor(nombre);
           }
         } catch (error) {
           console.error('Error al cargar datos del apoderado:', error);
@@ -337,20 +338,8 @@ export default function ChatValidacion() {
             });
           });
           
-          // Verificar si hay un mensaje de sistema de aprobación y el usuario es el apoderado
-          const mensajeAprobacion = lista.find((msg: any) => 
-            msg.emisor === 'Sistema' && 
-            msg.receptor === rut && 
-            msg.texto === 'La postulación ha sido aprobada.'
-          );
-          
-          if (mensajeAprobacion && rol === 'apoderado' && !redireccionProgramada.current) {
-            // Redirigir al apoderado a su página principal después de un breve delay
-            redireccionProgramada.current = true;
-            setTimeout(() => {
-              router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-            }, 1500); // 1.5 segundos para que el usuario vea el mensaje
-          }
+          // Nota: Se removió la redirección automática cuando se detecta aprobación
+          // para permitir que el apoderado pueda seguir chateando normalmente
           
           setMensajes(lista);
           
@@ -496,7 +485,7 @@ export default function ChatValidacion() {
     console.log('limpiarChat llamado');
     Alert.alert(
       'Limpiar chat',
-      '¿Estás seguro de que deseas eliminar todos los mensajes de este chat? Esta acción no se puede deshacer y afectará a ambos usuarios.',
+      '¿Estás seguro de que deseas ocultar todos los mensajes de este chat? Los mensajes no se eliminarán de la base de datos, solo se ocultarán en tu vista. El otro usuario seguirá viendo todos los mensajes. Los nuevos mensajes que lleguen se mostrarán normalmente.',
       [
         {
           text: 'Cancelar',
@@ -515,130 +504,34 @@ export default function ChatValidacion() {
                 return;
               }
 
-              const batch = writeBatch(db);
-              const mensajesRef = collection(db, 'MensajesChat');
-              
-              let q;
+              // Obtener la clave única del chat (específica por usuario)
+              let chatKey = '';
               if (idPostulacion) {
-                q = query(mensajesRef, where('idPostulacion', '==', idPostulacion));
+                chatKey = `chat_eliminados_${idPostulacion}_${rut}`;
               } else if (esAgregarHijo && params.rutHijo) {
                 const chatId = `agregar_hijo_${params.rutHijo}_${params.rutPadre}_${params.rutConductor || rut}`;
-                q = query(mensajesRef, where('chatId', '==', chatId));
+                chatKey = `chat_eliminados_${chatId}_${rut}`;
               } else {
                 Alert.alert('Error', 'No se pudo identificar el chat.');
                 return;
               }
 
-              const snapshot = await getDocs(q);
-              let mensajesEliminados = 0;
+              // Obtener todos los IDs de los mensajes actuales (todos los mensajes del chat)
+              const idsMensajesActuales = mensajes.map((msg) => msg.id);
               
-              console.log('Mensajes encontrados:', snapshot.docs.length);
-              
-              if (snapshot.empty) {
-                Alert.alert('Info', 'No hay mensajes para eliminar.');
+              if (idsMensajesActuales.length === 0) {
+                Alert.alert('Info', 'No hay mensajes para ocultar.');
                 return;
               }
-              
-              snapshot.docs.forEach((docSnap) => {
-                // Eliminar todos los mensajes, incluyendo los del sistema
-                batch.delete(doc(db, 'MensajesChat', docSnap.id));
-                mensajesEliminados++;
-              });
 
-              console.log('Eliminando', mensajesEliminados, 'mensajes...');
-              await batch.commit();
-              console.log('Mensajes eliminados exitosamente');
+              // Guardar los IDs de los mensajes en AsyncStorage para ocultarlos (solo para este usuario)
+              await AsyncStorage.setItem(chatKey, JSON.stringify(idsMensajesActuales));
               
-              // Limpiar el estado local inmediatamente para que el chat se vea vacío
-              setMensajes([]);
+              // Actualizar el estado local para ocultar los mensajes inmediatamente
+              setMensajesEliminados(new Set(idsMensajesActuales));
               
-              // Limpiar también los mensajes eliminados guardados localmente
-              let chatKey = '';
-              if (idPostulacion) {
-                chatKey = `chat_eliminados_${idPostulacion}`;
-              } else if (esAgregarHijo && params.rutHijo) {
-                const chatId = `agregar_hijo_${params.rutHijo}_${params.rutPadre}_${params.rutConductor || rut}`;
-                chatKey = `chat_eliminados_${chatId}`;
-              }
-              
-              if (chatKey) {
-                await AsyncStorage.removeItem(chatKey);
-                setMensajesEliminados(new Set());
-              }
-              
-              // Mostrar alerta preguntando si desea eliminar el chat completo
-              Alert.alert(
-                'Mensajes eliminados',
-                `Se eliminaron ${mensajesEliminados} mensaje(s) del chat. ¿Deseas eliminar el chat completo?`,
-                [
-                  {
-                    text: 'No',
-                    style: 'cancel',
-                  },
-                  {
-                    text: 'Sí, eliminar chat',
-                    style: 'destructive',
-                    onPress: async () => {
-                      try {
-                        const rut = await AsyncStorage.getItem('rutUsuario');
-                        if (!rut) {
-                          Alert.alert('Error', 'No se pudo obtener el RUT del usuario.');
-                          return;
-                        }
-
-                        if (idPostulacion) {
-                          // Eliminar la postulación
-                          await deleteDoc(doc(db, 'Postulaciones', idPostulacion));
-                          
-                          // Eliminar registros relacionados en lista_pasajeros
-                          const listaPasajerosRef = collection(db, 'lista_pasajeros');
-                          const pasajerosQuery = query(listaPasajerosRef, where('idPostulacion', '==', idPostulacion));
-                          const pasajerosSnapshot = await getDocs(pasajerosQuery);
-                          
-                          if (!pasajerosSnapshot.empty) {
-                            const batchPasajeros = writeBatch(db);
-                            pasajerosSnapshot.docs.forEach((docSnap) => {
-                              batchPasajeros.delete(docSnap.ref);
-                            });
-                            await batchPasajeros.commit();
-                          }
-                          
-                          Alert.alert('Éxito', 'El chat ha sido eliminado completamente.');
-                          router.back();
-                        } else if (esAgregarHijo && params.rutHijo) {
-                          // Eliminar el registro de lista_pasajeros para este chat
-                          const listaPasajerosRef = collection(db, 'lista_pasajeros');
-                          const rutHijoParam = params.rutHijo as string;
-                          const rutPadreParam = params.rutPadre as string;
-                          const rutConductorParam = params.rutConductor as string || rut;
-                          
-                          const pasajerosQuery = query(
-                            listaPasajerosRef,
-                            where('rutHijo', '==', rutHijoParam),
-                            where('rutApoderado', '==', rutPadreParam),
-                            where('rutConductor', '==', rutConductorParam)
-                          );
-                          const pasajerosSnapshot = await getDocs(pasajerosQuery);
-                          
-                          if (!pasajerosSnapshot.empty) {
-                            const batchPasajeros = writeBatch(db);
-                            pasajerosSnapshot.docs.forEach((docSnap) => {
-                              batchPasajeros.delete(docSnap.ref);
-                            });
-                            await batchPasajeros.commit();
-                          }
-                          
-                          Alert.alert('Éxito', 'El chat ha sido eliminado completamente.');
-                          router.back();
-                        }
-                      } catch (error) {
-                        console.error('Error al eliminar el chat:', error);
-                        Alert.alert('Error', 'No se pudo eliminar el chat.');
-                      }
-                    },
-                  },
-                ]
-              );
+              console.log(`Se ocultaron ${idsMensajesActuales.length} mensaje(s) del chat para el usuario ${rut}`);
+              Alert.alert('Chat limpiado', `Se ocultaron ${idsMensajesActuales.length} mensaje(s). El chat ahora está vacío. Los mensajes siguen en la base de datos pero solo están ocultos para ti.`);
             } catch (error) {
               console.error('Error al limpiar chat:', error);
               Alert.alert('Error', 'No se pudo limpiar el chat.');
@@ -1275,40 +1168,42 @@ export default function ChatValidacion() {
   };
 
   const participantesConversacion = [rutUsuario, rutReceptor].filter(Boolean);
-  const mensajesFiltrados = mensajes.filter((item) => {
-    // Excluir mensajes eliminados por el usuario
-    if (mensajesEliminados.has(item.id)) {
-      return false;
-    }
-    
-    const emisor = item.emisor as string | undefined;
-    const receptor = item.receptor as string | undefined;
-    const participantesMensaje: string[] = Array.isArray(item.participantes)
-      ? item.participantes
-      : [emisor, receptor].filter(Boolean) as string[];
+  const mensajesFiltrados = useMemo(() => {
+    return mensajes.filter((item) => {
+      // Excluir mensajes eliminados por el usuario
+      if (mensajesEliminados.has(item.id)) {
+        return false;
+      }
+      
+      const emisor = item.emisor as string | undefined;
+      const receptor = item.receptor as string | undefined;
+      const participantesMensaje: string[] = Array.isArray(item.participantes)
+        ? item.participantes
+        : [emisor, receptor].filter(Boolean) as string[];
 
-    if (!rutUsuario) {
-      return false;
-    }
+      if (!rutUsuario) {
+        return false;
+      }
 
-    // Mensajes del sistema: deben ser para el usuario actual
-    if (emisor === 'Sistema') {
-      return receptor === rutUsuario;
-    }
+      // Mensajes del sistema: deben ser para el usuario actual
+      if (emisor === 'Sistema') {
+        return receptor === rutUsuario;
+      }
 
-    // Si no hay rutReceptor (chat de AgregarHijo), mostrar todos los mensajes
-    // donde el usuario es emisor o receptor
-    if (!rutReceptor) {
-      return emisor === rutUsuario || receptor === rutUsuario;
-    }
+      // Si no hay rutReceptor (chat de AgregarHijo), mostrar todos los mensajes
+      // donde el usuario es emisor o receptor
+      if (!rutReceptor) {
+        return emisor === rutUsuario || receptor === rutUsuario;
+      }
 
-    // Si hay rutReceptor (chat normal), verificar conversación directa
-    const esConversacionDirecta =
-      (emisor === rutUsuario && receptor === rutReceptor) ||
-      (emisor === rutReceptor && receptor === rutUsuario);
+      // Si hay rutReceptor (chat normal), verificar conversación directa
+      const esConversacionDirecta =
+        (emisor === rutUsuario && receptor === rutReceptor) ||
+        (emisor === rutReceptor && receptor === rutUsuario);
 
-    return esConversacionDirecta;
-  });
+      return esConversacionDirecta;
+    });
+  }, [mensajes, mensajesEliminados, rutUsuario, rutReceptor]);
 
   // Hacer scroll al final cuando se cargan los mensajes
   useEffect(() => {
@@ -1375,7 +1270,7 @@ export default function ChatValidacion() {
         </View>
       )}
 
-      {hijo && (
+      {hijo && (esChatUrgencia || mostrarBotonesValidacion) && (
         <View style={{ padding: 10, backgroundColor: '#fff' }}>
           {esChatUrgencia ? (
             <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#a94442' }}>
@@ -1385,21 +1280,24 @@ export default function ChatValidacion() {
             <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#127067' }}>
               Postulación de: {hijo.nombres} {hijo.apellidos}
             </Text>
-          ) : (
-            <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#127067' }}>
-              Chat con: {hijo.nombres} {hijo.apellidos}
-            </Text>
-          )}
+          ) : null}
         </View>
       )}
 
-      <FlatList
-        ref={flatListRef}
-        data={mensajesFiltrados}
-        keyExtractor={(item, index) =>
-          typeof item.id === 'string' ? item.id : index.toString()
-        }
-        renderItem={({ item }) => (
+      {mensajesFiltrados.length === 0 && mensajes.length > 0 ? (
+        <View style={styles.emptyChatContainer}>
+          <Ionicons name="chatbubbles-outline" size={64} color="#ccc" />
+          <Text style={styles.emptyChatText}>No hay mensajes visibles</Text>
+          <Text style={styles.emptyChatSubtext}>Los mensajes están ocultos. Los nuevos mensajes aparecerán aquí.</Text>
+        </View>
+      ) : (
+        <FlatList
+          ref={flatListRef}
+          data={mensajesFiltrados}
+          keyExtractor={(item, index) =>
+            typeof item.id === 'string' ? item.id : index.toString()
+          }
+          renderItem={({ item }) => (
           <View
             style={[
               styles.mensajeItem,
@@ -1439,6 +1337,7 @@ export default function ChatValidacion() {
           flatListRef.current?.scrollToEnd({ animated: false });
         }}
       />
+      )}
 
       <View style={styles.inputArea}>
         <TextInput
@@ -1607,6 +1506,25 @@ const styles = StyleSheet.create({
   accionText: {
     color: '#fff',
     fontSize: 16,
+    textAlign: 'center',
+  },
+  emptyChatContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  emptyChatText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 16,
+    textAlign: 'center',
+  },
+  emptyChatSubtext: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 8,
     textAlign: 'center',
   },
 });

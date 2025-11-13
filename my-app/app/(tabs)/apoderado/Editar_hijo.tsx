@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -88,11 +88,23 @@ export default function EditarHijoScreen() {
 
     try {
       setLoading(true);
-      const snapshot = await getDoc(doc(db, 'Hijos', hijoId));
+      const hijoRef = doc(db, 'Hijos', hijoId);
+      const snapshot = await getDoc(hijoRef);
       if (!snapshot.exists()) {
         Alert.alert('Error', 'No se encontró el registro del hijo para editar.');
         return;
       }
+
+      // Actualizar los datos básicos directamente en Firestore
+      await updateDoc(hijoRef, {
+        nombres,
+        apellidos,
+        rut,
+        fechaNacimiento,
+        edad,
+        rutUsuario,
+        actualizadoEn: serverTimestamp(),
+      });
 
       const borrador = {
         id: hijoId,
@@ -110,13 +122,14 @@ export default function EditarHijoScreen() {
       ]);
       await AsyncStorage.multiRemove(['editarHijoHorario', 'editarHijoInforme']);
 
-      router.push({
+      Alert.alert('Éxito', 'Los datos del hijo se actualizaron correctamente.');
+      router.replace({
         pathname: '/(tabs)/apoderado/Editar_Horario_hijo',
         params: { id: hijoId },
       });
     } catch (error) {
       console.error('Error al preparar la edición del hijo:', error);
-      Alert.alert('Error', 'No se pudo preparar la edición del hijo.');
+      Alert.alert('Error', 'No se pudo guardar la información del hijo.');
     } finally {
       setLoading(false);
     }
@@ -125,7 +138,10 @@ export default function EditarHijoScreen() {
   return (
     <View style={styles.container}>
       {/* Botón de volver */}
-      <Pressable style={styles.backButton} onPress={() => router.back()}>
+      <Pressable 
+        style={styles.backButton} 
+        onPress={() => router.replace('/(tabs)/apoderado/perfil-apoderado')}
+      >
         <Ionicons name="arrow-back" size={28} color="#127067" />
       </Pressable>
 

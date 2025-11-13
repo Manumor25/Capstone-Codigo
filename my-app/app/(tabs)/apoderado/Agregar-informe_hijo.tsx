@@ -46,6 +46,30 @@ const PAISES_LATINOAMERICANOS = [
   'Venezuela',
 ];
 
+// Lista de parentescos familiares
+const PARENTESCOS_FAMILIARES = [
+  'Padre',
+  'Madre',
+  'Tutor',
+  'Abuelo/a',
+  'Tío/a',
+  'Hermano/a',
+  'Primo/a',
+  'Otro',
+];
+
+// Lista de tipos sanguíneos
+const TIPOS_SANGUINEOS = [
+  'A+',
+  'A-',
+  'B+',
+  'B-',
+  'AB+',
+  'AB-',
+  'O+',
+  'O-',
+];
+
 interface DatosHijoDraft {
   nombres: string;
   apellidos: string;
@@ -760,12 +784,24 @@ export default function AgregarInformeHijoScreen() {
             </View>
             <View style={[styles.inputGroup, styles.halfWidth]}>
               <Text style={styles.label}>Parentesco</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Parentesco"
-                value={fichaMedica.padre1Parentesco}
-                onChangeText={(text) => actualizarCampo('padre1Parentesco', text)}
-              />
+              <View style={styles.pickerContainer}>
+                <Picker
+                  selectedValue={fichaMedica.padre1Parentesco}
+                  onValueChange={(value) => actualizarCampo('padre1Parentesco', value)}
+                  style={styles.picker}
+                  itemStyle={Platform.OS === 'ios' ? styles.pickerItem : undefined}
+                >
+                  <Picker.Item label="Seleccionar parentesco" value="" color="#999" />
+                  {PARENTESCOS_FAMILIARES.map((parentesco) => (
+                    <Picker.Item
+                      key={parentesco}
+                      label={parentesco}
+                      value={parentesco}
+                      color="#000"
+                    />
+                  ))}
+                </Picker>
+              </View>
             </View>
           </View>
 
@@ -792,12 +828,24 @@ export default function AgregarInformeHijoScreen() {
             </View>
             <View style={[styles.inputGroup, styles.halfWidth]}>
               <Text style={styles.label}>Parentesco</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Parentesco"
-                value={fichaMedica.padre2Parentesco}
-                onChangeText={(text) => actualizarCampo('padre2Parentesco', text)}
-              />
+              <View style={styles.pickerContainer}>
+                <Picker
+                  selectedValue={fichaMedica.padre2Parentesco}
+                  onValueChange={(value) => actualizarCampo('padre2Parentesco', value)}
+                  style={styles.picker}
+                  itemStyle={Platform.OS === 'ios' ? styles.pickerItem : undefined}
+                >
+                  <Picker.Item label="Seleccionar parentesco" value="" color="#999" />
+                  {PARENTESCOS_FAMILIARES.map((parentesco) => (
+                    <Picker.Item
+                      key={parentesco}
+                      label={parentesco}
+                      value={parentesco}
+                      color="#000"
+                    />
+                  ))}
+                </Picker>
+              </View>
             </View>
           </View>
         </View>
@@ -809,12 +857,24 @@ export default function AgregarInformeHijoScreen() {
           <View style={styles.row}>
             <View style={[styles.inputGroup, styles.halfWidth, styles.firstHalfWidth]}>
               <Text style={styles.label}>Grupo Sanguíneo</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Grupo sanguíneo"
-                value={fichaMedica.grupoSanguineo}
-                onChangeText={(text) => actualizarCampo('grupoSanguineo', text)}
-              />
+              <View style={styles.pickerContainer}>
+                <Picker
+                  selectedValue={fichaMedica.grupoSanguineo}
+                  onValueChange={(value) => actualizarCampo('grupoSanguineo', value)}
+                  style={styles.picker}
+                  itemStyle={Platform.OS === 'ios' ? styles.pickerItem : undefined}
+                >
+                  <Picker.Item label="Seleccionar tipo sanguíneo" value="" color="#999" />
+                  {TIPOS_SANGUINEOS.map((tipo) => (
+                    <Picker.Item
+                      key={tipo}
+                      label={tipo}
+                      value={tipo}
+                      color="#000"
+                    />
+                  ))}
+                </Picker>
+              </View>
             </View>
             <View style={[styles.inputGroup, styles.halfWidth]}>
               <Text style={styles.label}>Teléfono de Emergencias *</Text>

@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { db } from '@/firebaseConfig';
-import { collection, doc, updateDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, updateDoc, getDocs, query, where, serverTimestamp, writeBatch } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
 import { makeShadow } from '@/utils/shadow';
@@ -82,15 +82,53 @@ export default function EditarVehiculoScreen() {
     try {
       setLoading(true);
 
+      const patenteNormalizada = patente.toUpperCase().trim();
+      const patenteAnterior = params.patente?.toString().toUpperCase().trim() || '';
+
+      // 1. Actualizar en la colección Vehiculos
       const vehiculoRef = doc(db, 'Vehiculos', vehiculoId);
       
       await updateDoc(vehiculoRef, {
-        patente: patente.toUpperCase(),
-        modelo,
-        ano,
+        patente: patenteNormalizada,
+        modelo: modelo.trim(),
+        ano: ano.trim(),
         rutUsuario,
         actualizadoEn: serverTimestamp(),
       });
+
+      // 2. Si el vehículo está promocionado (existe en Furgones), también actualizar allí
+      try {
+        const furgonesRef = collection(db, 'Furgones');
+        let queryFurgones;
+        
+        // Buscar por patente anterior si cambió, o por patente actual
+        if (patenteAnterior && patenteAnterior !== patenteNormalizada) {
+          queryFurgones = query(furgonesRef, where('patente', '==', patenteAnterior));
+        } else {
+          queryFurgones = query(furgonesRef, where('patente', '==', patenteNormalizada));
+        }
+        
+        const furgonesSnapshot = await getDocs(queryFurgones);
+        
+        if (!furgonesSnapshot.empty) {
+          // Actualizar todos los documentos de Furgones que coincidan
+          const batch = writeBatch(db);
+          furgonesSnapshot.docs.forEach((docSnap) => {
+            const furgonRef = doc(db, 'Furgones', docSnap.id);
+            batch.update(furgonRef, {
+              patente: patenteNormalizada,
+              modelo: modelo.trim(),
+              ano: ano.trim(),
+              actualizadoEn: serverTimestamp(),
+            });
+          });
+          await batch.commit();
+          console.log('✅ Furgones actualizados:', furgonesSnapshot.docs.length);
+        }
+      } catch (errorFurgones) {
+        console.warn('⚠️ No se pudieron actualizar los Furgones (puede que no esté promocionado):', errorFurgones);
+        // No es crítico si falla, el vehículo ya se actualizó
+      }
 
       Alert.alert('✅ Éxito', 'Vehículo actualizado correctamente.');
       router.back();
@@ -102,16 +140,23 @@ export default function EditarVehiculoScreen() {
     }
   };
 
+  const handleVolver = () => {
+    if (router.canGoBack?.()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/conductor/lista_vehiculos');
+    }
+  };
+
   return (
     <View style={styles.container}>
-      {/* Botón de volver */}
-      <Pressable style={styles.backButton} onPress={() => router.back()}>
-        <Ionicons name="arrow-back" size={28} color="#127067" />
-      </Pressable>
-
-      {/* Header con título */}
+      {/* Header con título y botón de volver */}
       <View style={styles.header}>
+        <Pressable style={styles.backButtonHeader} onPress={handleVolver}>
+          <Ionicons name="arrow-back" size={24} color="#ffffff" />
+        </Pressable>
         <Text style={styles.headerTitle}>Editar Datos Vehículo</Text>
+        <View style={styles.headerSpacer} />
       </View>
 
       <ScrollView 
@@ -184,26 +229,30 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#ffffff',
   },
-  backButton: {
-    position: 'absolute',
-    top: 40,
-    left: 20,
-    zIndex: 10,
-    padding: 5,
-  },
   header: {
     width: '100%',
     paddingTop: 50,
     paddingBottom: 20,
     backgroundColor: '#127067',
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+  },
+  backButtonHeader: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#ffffff',
     textAlign: 'center',
+    flex: 1,
+  },
+  headerSpacer: {
+    width: 40,
   },
   scrollContent: {
     flexGrow: 1,

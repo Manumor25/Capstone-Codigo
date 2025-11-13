@@ -6,7 +6,6 @@ import {
   Text,
   View,
   TextInput,
-  Switch,
   Pressable,
   Alert,
   ActivityIndicator,
@@ -28,7 +27,6 @@ export default function EditarUsuarioScreen() {
   const [correo, setCorreo] = useState('');
   const [telefono, setTelefono] = useState('');
   const [rut, setRut] = useState('');
-  const [esConductor, setEsConductor] = useState(false);
   const [rutUsuario, setRutUsuario] = useState('');
   const [userId, setUserId] = useState('');
   const [loading, setLoading] = useState(false);
@@ -68,7 +66,6 @@ export default function EditarUsuarioScreen() {
           setCorreo(userData.correo || '');
           setTelefono(userData.telefono || '');
           setRut(userData.rut || '');
-          setEsConductor(userData.rol === 'Conductor');
         } else {
           Alert.alert('Error', 'No se encontraron datos del usuario.');
         }
@@ -121,7 +118,6 @@ export default function EditarUsuarioScreen() {
         correo,
         telefono: telefono || '',
         rut,
-        rol: esConductor ? 'Conductor' : 'Apoderado',
         actualizadoEn: serverTimestamp(),
       });
 
@@ -228,15 +224,6 @@ export default function EditarUsuarioScreen() {
             {errores.rut ? <Text style={styles.errorText}>{errores.rut}</Text> : null}
           </View>
 
-          <View style={styles.switchContainer}>
-            <Text style={styles.switchLabel}>Conductor de furgón</Text>
-            <Switch
-              value={esConductor}
-              onValueChange={setEsConductor}
-              thumbColor={esConductor ? '#127067' : '#ccc'}
-              trackColor={{ false: '#ccc', true: '#85d7c0' }}
-            />
-          </View>
         </View>
 
         <Pressable style={styles.button} onPress={manejarActualizarUsuario} disabled={loading}>
@@ -328,19 +315,6 @@ const styles = StyleSheet.create({
     padding: 15,
     backgroundColor: '#F5F7F8',
     fontSize: 16,
-  },
-  switchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 20,
-    width: '100%',
-    paddingHorizontal: 5,
-  },
-  switchLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
   },
   button: {
     backgroundColor: '#127067',

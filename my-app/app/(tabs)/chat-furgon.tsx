@@ -175,7 +175,7 @@ export default function ChatFurgon() {
 
       const apoderadosMap = new Map<string, ApoderadoChat>();
 
-      // Agrupar por apoderado (un apoderado puede tener múltiples hijos)
+      // Agrupar solo por apoderado (un chat por apoderado, no por hijo)
       for (const docSnap of snapshot.docs) {
         const data = docSnap.data();
         const rutApoderado = data.rutApoderado || '';
@@ -188,16 +188,17 @@ export default function ChatFurgon() {
 
         if (!rutApoderado) continue;
 
-        // Crear una clave única por apoderado e hijo para mantener chats separados
-        const claveChat = `${rutApoderado}_${rutHijo}`;
+        // Crear una clave única solo por apoderado (un chat por apoderado)
+        const claveChat = rutApoderado;
 
         if (!apoderadosMap.has(claveChat)) {
+          // Si es el primer hijo de este apoderado, crear la entrada
           apoderadosMap.set(claveChat, {
             rutApoderado,
             nombreApoderado,
-            rutHijo,
-            nombreHijo,
-            idPostulacion,
+            rutHijo, // Guardar el primer hijo encontrado (se usará como referencia)
+            nombreHijo, // Guardar el primer hijo encontrado
+            idPostulacion, // Guardar la primera postulación encontrada
             patenteFurgon,
             idFurgon,
           });
@@ -206,137 +207,174 @@ export default function ChatFurgon() {
 
       const apoderadosLista = Array.from(apoderadosMap.values());
 
-      // Para cada apoderado, buscar el último mensaje y contar no leídos
+      // Para cada apoderado, buscar TODOS los mensajes de TODOS sus hijos y combinarlos
       const apoderadosConMensajes = await Promise.all(
         apoderadosLista.map(async (apoderado) => {
           try {
-            // Si no hay idPostulacion, intentar obtenerla desde Postulaciones
-            if (!apoderado.idPostulacion) {
-              try {
-                const postulacionesRef = collection(db, 'Postulaciones');
-                const postQuery = query(
-                  postulacionesRef,
-                  where('rutUsuario', '==', apoderado.rutApoderado),
-                  where('rutHijo', '==', apoderado.rutHijo),
-                  where('rutConductor', '==', rutConductor),
-                  limit(1),
-                );
-                const postSnap = await getDocs(postQuery);
-                if (!postSnap.empty) {
-                  apoderado.idPostulacion = postSnap.docs[0].id;
+            // Obtener todos los hijos de este apoderado con este conductor
+            const todosLosHijos = snapshot.docs
+              .filter(doc => {
+                const data = doc.data();
+                return data.rutApoderado === apoderado.rutApoderado;
+              })
+              .map(doc => doc.data());
+
+            // Recopilar todos los mensajes de todos los hijos
+            const todosLosMensajes: Array<{
+              id: string;
+              texto: string;
+              fecha: string;
+              emisor: string;
+              claveChat: string;
+            }> = [];
+
+            let totalNoLeidos = 0;
+
+            for (const hijoData of todosLosHijos) {
+              const rutHijo = hijoData.rutHijo || '';
+              let idPostulacion = hijoData.idPostulacion || '';
+
+              // Si no hay idPostulacion, intentar obtenerla desde Postulaciones
+              if (!idPostulacion) {
+                try {
+                  const postulacionesRef = collection(db, 'Postulaciones');
+                  const postQuery = query(
+                    postulacionesRef,
+                    where('rutUsuario', '==', apoderado.rutApoderado),
+                    where('rutHijo', '==', rutHijo),
+                    where('rutConductor', '==', rutConductor),
+                    limit(1),
+                  );
+                  const postSnap = await getDocs(postQuery);
+                  if (!postSnap.empty) {
+                    idPostulacion = postSnap.docs[0].id;
+                  }
+                } catch (error) {
+                  console.error('Error al buscar postulación:', error);
                 }
-              } catch (error) {
-                console.error('Error al buscar postulación:', error);
+              }
+
+              const claveChat = obtenerClaveChat(
+                idPostulacion,
+                rutHijo,
+                apoderado.rutApoderado,
+                rutConductor
+              );
+
+              // Buscar mensajes por idPostulacion si existe
+              if (idPostulacion) {
+                try {
+                  const mensajesRef = collection(db, 'MensajesChat');
+                  const mensajesQuery = query(
+                    mensajesRef,
+                    where('idPostulacion', '==', idPostulacion),
+                  );
+                  const mensajesSnap = await getDocs(mensajesQuery);
+                  
+                  if (!mensajesSnap.empty) {
+                    const mensajesHijo = mensajesSnap.docs.map(doc => {
+                      const data = doc.data() as any;
+                      return {
+                        id: doc.id,
+                        texto: data.texto || '',
+                        fecha: data.fecha || '',
+                        emisor: data.emisor || '',
+                        claveChat,
+                      };
+                    });
+                    todosLosMensajes.push(...mensajesHijo);
+                    
+                    // Contar mensajes no leídos de este hijo
+                    const noLeidos = await contarMensajesNoLeidos(mensajesHijo, rutConductor, claveChat);
+                    totalNoLeidos += noLeidos;
+                  }
+                } catch (error) {
+                  console.error('Error al cargar mensajes:', error);
+                }
+              } else {
+                // Si no hay idPostulacion, buscar por chatId (para chats de AgregarHijo)
+                try {
+                  const chatId = `agregar_hijo_${rutHijo}_${apoderado.rutApoderado}_${rutConductor}`;
+                  const mensajesRef = collection(db, 'MensajesChat');
+                  const mensajesQuery = query(
+                    mensajesRef,
+                    where('chatId', '==', chatId),
+                  );
+                  const mensajesSnap = await getDocs(mensajesQuery);
+                  
+                  if (!mensajesSnap.empty) {
+                    const mensajesHijo = mensajesSnap.docs.map(doc => {
+                      const data = doc.data() as any;
+                      return {
+                        id: doc.id,
+                        texto: data.texto || '',
+                        fecha: data.fecha || '',
+                        emisor: data.emisor || '',
+                        claveChat,
+                      };
+                    });
+                    todosLosMensajes.push(...mensajesHijo);
+                    
+                    // Contar mensajes no leídos de este hijo
+                    const noLeidos = await contarMensajesNoLeidos(mensajesHijo, rutConductor, claveChat);
+                    totalNoLeidos += noLeidos;
+                  }
+                } catch (error) {
+                  console.error('Error al cargar mensajes por chatId:', error);
+                }
               }
             }
 
-            const claveChat = obtenerClaveChat(
-              apoderado.idPostulacion,
-              apoderado.rutHijo,
-              apoderado.rutApoderado,
-              rutConductor
-            );
+            // Ordenar todos los mensajes por fecha (más reciente primero)
+            todosLosMensajes.sort((a, b) => {
+              const fechaA = a.fecha ? new Date(a.fecha).getTime() : 0;
+              const fechaB = b.fecha ? new Date(b.fecha).getTime() : 0;
+              return fechaB - fechaA;
+            });
 
-            // Buscar mensajes por idPostulacion si existe
-            if (apoderado.idPostulacion) {
-              try {
-                const mensajesRef = collection(db, 'MensajesChat');
-                const mensajesQuery = query(
-                  mensajesRef,
-                  where('idPostulacion', '==', apoderado.idPostulacion),
-                );
-                const mensajesSnap = await getDocs(mensajesQuery);
-                
-                if (!mensajesSnap.empty) {
-                  // Obtener todos los mensajes
-                  const todosLosMensajes = mensajesSnap.docs.map(doc => {
-                    const data = doc.data() as any;
-                    return {
-                      id: doc.id,
-                      texto: data.texto || '',
-                      fecha: data.fecha || '',
-                      emisor: data.emisor || '',
-                    };
-                  });
-                  
-                  // Ordenar por fecha
-                  todosLosMensajes.sort((a, b) => {
-                    const fechaA = a.fecha ? new Date(a.fecha).getTime() : 0;
-                    const fechaB = b.fecha ? new Date(b.fecha).getTime() : 0;
-                    return fechaB - fechaA;
-                  });
-                  
-                  // Obtener último mensaje
-                  const ultimoMensaje = todosLosMensajes[0];
-                  apoderado.ultimoMensaje = ultimoMensaje.texto || '';
-                  apoderado.ultimoMensajeFecha = ultimoMensaje.fecha 
-                    ? new Date(ultimoMensaje.fecha) 
-                    : undefined;
-                  apoderado.ultimoMensajeEmisor = ultimoMensaje.emisor || '';
-                  
-                  // Contar mensajes no leídos
-                  const noLeidos = await contarMensajesNoLeidos(todosLosMensajes, rutConductor, claveChat);
-                  apoderado.cantidadNoLeidos = noLeidos;
-                } else {
-                  apoderado.cantidadNoLeidos = 0;
-                }
-              } catch (error) {
-                console.error('Error al cargar mensajes:', error);
-                apoderado.cantidadNoLeidos = 0;
-              }
-            } else {
-              // Si no hay idPostulacion, buscar por chatId (para chats de AgregarHijo)
-              try {
-                const chatId = `agregar_hijo_${apoderado.rutHijo}_${apoderado.rutApoderado}_${rutConductor}`;
-                const mensajesRef = collection(db, 'MensajesChat');
-                const mensajesQuery = query(
-                  mensajesRef,
-                  where('chatId', '==', chatId),
-                );
-                const mensajesSnap = await getDocs(mensajesQuery);
-                
-                if (!mensajesSnap.empty) {
-                  // Obtener todos los mensajes
-                  const todosLosMensajes = mensajesSnap.docs.map(doc => {
-                    const data = doc.data() as any;
-                    return {
-                      id: doc.id,
-                      texto: data.texto || '',
-                      fecha: data.fecha || '',
-                      emisor: data.emisor || '',
-                    };
-                  });
-                  
-                  // Ordenar por fecha
-                  todosLosMensajes.sort((a, b) => {
-                    const fechaA = a.fecha ? new Date(a.fecha).getTime() : 0;
-                    const fechaB = b.fecha ? new Date(b.fecha).getTime() : 0;
-                    return fechaB - fechaA;
-                  });
-                  
-                  // Obtener último mensaje
-                  const ultimoMensaje = todosLosMensajes[0];
-                  apoderado.ultimoMensaje = ultimoMensaje.texto || '';
-                  apoderado.ultimoMensajeFecha = ultimoMensaje.fecha 
-                    ? new Date(ultimoMensaje.fecha) 
-                    : undefined;
-                  apoderado.ultimoMensajeEmisor = ultimoMensaje.emisor || '';
-                  
-                  // Contar mensajes no leídos
-                  const noLeidos = await contarMensajesNoLeidos(todosLosMensajes, rutConductor, claveChat);
-                  apoderado.cantidadNoLeidos = noLeidos;
-                } else {
-                  apoderado.cantidadNoLeidos = 0;
-                }
-              } catch (error) {
-                console.error('Error al cargar mensajes por chatId:', error);
-                apoderado.cantidadNoLeidos = 0;
-              }
+            // Obtener el último mensaje de todos los hijos
+            if (todosLosMensajes.length > 0) {
+              const ultimoMensaje = todosLosMensajes[0];
+              apoderado.ultimoMensaje = ultimoMensaje.texto || '';
+              apoderado.ultimoMensajeFecha = ultimoMensaje.fecha 
+                ? new Date(ultimoMensaje.fecha) 
+                : undefined;
+              apoderado.ultimoMensajeEmisor = ultimoMensaje.emisor || '';
             }
 
-            // Configurar listener en tiempo real para este chat
-            if (claveChat) {
-              configurarListenerChat(apoderado, rutConductor, claveChat, 'apoderado');
+            apoderado.cantidadNoLeidos = totalNoLeidos;
+
+            // Configurar listener en tiempo real para el primer chat (se actualizará con todos)
+            if (todosLosHijos.length > 0) {
+              const primerHijo = todosLosHijos[0];
+              let primerIdPostulacion = primerHijo.idPostulacion || '';
+              if (!primerIdPostulacion) {
+                try {
+                  const postulacionesRef = collection(db, 'Postulaciones');
+                  const postQuery = query(
+                    postulacionesRef,
+                    where('rutUsuario', '==', apoderado.rutApoderado),
+                    where('rutHijo', '==', primerHijo.rutHijo),
+                    where('rutConductor', '==', rutConductor),
+                    limit(1),
+                  );
+                  const postSnap = await getDocs(postQuery);
+                  if (!postSnap.empty) {
+                    primerIdPostulacion = postSnap.docs[0].id;
+                  }
+                } catch (error) {
+                  console.error('Error al buscar postulación:', error);
+                }
+              }
+              const claveChat = obtenerClaveChat(
+                primerIdPostulacion,
+                primerHijo.rutHijo,
+                apoderado.rutApoderado,
+                rutConductor
+              );
+              if (claveChat) {
+                configurarListenerChat(apoderado, rutConductor, claveChat, 'apoderado');
+              }
             }
           } catch (error) {
             console.error('Error al cargar mensajes para apoderado:', error);
@@ -392,7 +430,7 @@ export default function ChatFurgon() {
         console.error('Error al obtener nombre del apoderado:', error);
       }
 
-      // Agrupar por conductor (un conductor puede tener múltiples hijos del mismo apoderado)
+      // Agrupar solo por conductor (un chat por conductor, no por hijo)
       for (const docSnap of snapshot.docs) {
         const data = docSnap.data();
         const rutConductor = data.rutConductor || '';
@@ -418,16 +456,17 @@ export default function ChatFurgon() {
           console.error('Error al obtener nombre del conductor:', error);
         }
 
-        // Crear una clave única por conductor e hijo para mantener chats separados
-        const claveChat = `${rutConductor}_${rutHijo}`;
+        // Crear una clave única solo por conductor (un chat por conductor)
+        const claveChat = rutConductor;
 
         if (!conductoresMap.has(claveChat)) {
+          // Si es el primer hijo de este conductor, crear la entrada
           conductoresMap.set(claveChat, {
             rutConductor,
             nombreConductor: nombreConductorFinal,
-            rutHijo,
-            nombreHijo,
-            idPostulacion,
+            rutHijo, // Guardar el primer hijo encontrado (se usará como referencia)
+            nombreHijo, // Guardar el primer hijo encontrado
+            idPostulacion, // Guardar la primera postulación encontrada
             patenteFurgon,
             idFurgon,
           });
@@ -436,137 +475,174 @@ export default function ChatFurgon() {
 
       const conductoresLista = Array.from(conductoresMap.values());
 
-      // Para cada conductor, buscar el último mensaje
+      // Para cada conductor, buscar TODOS los mensajes de TODOS sus hijos y combinarlos
       const conductoresConMensajes = await Promise.all(
         conductoresLista.map(async (conductor) => {
           try {
-            // Si no hay idPostulacion, intentar obtenerla desde Postulaciones
-            if (!conductor.idPostulacion) {
-              try {
-                const postulacionesRef = collection(db, 'Postulaciones');
-                const postQuery = query(
-                  postulacionesRef,
-                  where('rutUsuario', '==', rutApoderado),
-                  where('rutHijo', '==', conductor.rutHijo),
-                  where('rutConductor', '==', conductor.rutConductor),
-                  limit(1),
-                );
-                const postSnap = await getDocs(postQuery);
-                if (!postSnap.empty) {
-                  conductor.idPostulacion = postSnap.docs[0].id;
+            // Obtener todos los hijos de este apoderado con este conductor
+            const todosLosHijos = snapshot.docs
+              .filter(doc => {
+                const data = doc.data();
+                return data.rutConductor === conductor.rutConductor;
+              })
+              .map(doc => doc.data());
+
+            // Recopilar todos los mensajes de todos los hijos
+            const todosLosMensajes: Array<{
+              id: string;
+              texto: string;
+              fecha: string;
+              emisor: string;
+              claveChat: string;
+            }> = [];
+
+            let totalNoLeidos = 0;
+
+            for (const hijoData of todosLosHijos) {
+              const rutHijo = hijoData.rutHijo || '';
+              let idPostulacion = hijoData.idPostulacion || '';
+
+              // Si no hay idPostulacion, intentar obtenerla desde Postulaciones
+              if (!idPostulacion) {
+                try {
+                  const postulacionesRef = collection(db, 'Postulaciones');
+                  const postQuery = query(
+                    postulacionesRef,
+                    where('rutUsuario', '==', rutApoderado),
+                    where('rutHijo', '==', rutHijo),
+                    where('rutConductor', '==', conductor.rutConductor),
+                    limit(1),
+                  );
+                  const postSnap = await getDocs(postQuery);
+                  if (!postSnap.empty) {
+                    idPostulacion = postSnap.docs[0].id;
+                  }
+                } catch (error) {
+                  console.error('Error al buscar postulación:', error);
                 }
-              } catch (error) {
-                console.error('Error al buscar postulación:', error);
+              }
+
+              const claveChat = obtenerClaveChat(
+                idPostulacion,
+                rutHijo,
+                rutApoderado,
+                conductor.rutConductor
+              );
+
+              // Buscar mensajes por idPostulacion si existe
+              if (idPostulacion) {
+                try {
+                  const mensajesRef = collection(db, 'MensajesChat');
+                  const mensajesQuery = query(
+                    mensajesRef,
+                    where('idPostulacion', '==', idPostulacion),
+                  );
+                  const mensajesSnap = await getDocs(mensajesQuery);
+                  
+                  if (!mensajesSnap.empty) {
+                    const mensajesHijo = mensajesSnap.docs.map(doc => {
+                      const data = doc.data() as any;
+                      return {
+                        id: doc.id,
+                        texto: data.texto || '',
+                        fecha: data.fecha || '',
+                        emisor: data.emisor || '',
+                        claveChat,
+                      };
+                    });
+                    todosLosMensajes.push(...mensajesHijo);
+                    
+                    // Contar mensajes no leídos de este hijo
+                    const noLeidos = await contarMensajesNoLeidos(mensajesHijo, rutApoderado, claveChat);
+                    totalNoLeidos += noLeidos;
+                  }
+                } catch (error) {
+                  console.error('Error al cargar mensajes:', error);
+                }
+              } else {
+                // Si no hay idPostulacion, buscar por chatId (para chats de AgregarHijo)
+                try {
+                  const chatId = `agregar_hijo_${rutHijo}_${rutApoderado}_${conductor.rutConductor}`;
+                  const mensajesRef = collection(db, 'MensajesChat');
+                  const mensajesQuery = query(
+                    mensajesRef,
+                    where('chatId', '==', chatId),
+                  );
+                  const mensajesSnap = await getDocs(mensajesQuery);
+                  
+                  if (!mensajesSnap.empty) {
+                    const mensajesHijo = mensajesSnap.docs.map(doc => {
+                      const data = doc.data() as any;
+                      return {
+                        id: doc.id,
+                        texto: data.texto || '',
+                        fecha: data.fecha || '',
+                        emisor: data.emisor || '',
+                        claveChat,
+                      };
+                    });
+                    todosLosMensajes.push(...mensajesHijo);
+                    
+                    // Contar mensajes no leídos de este hijo
+                    const noLeidos = await contarMensajesNoLeidos(mensajesHijo, rutApoderado, claveChat);
+                    totalNoLeidos += noLeidos;
+                  }
+                } catch (error) {
+                  console.error('Error al cargar mensajes por chatId:', error);
+                }
               }
             }
 
-            const claveChat = obtenerClaveChat(
-              conductor.idPostulacion,
-              conductor.rutHijo,
-              rutApoderado,
-              conductor.rutConductor
-            );
+            // Ordenar todos los mensajes por fecha (más reciente primero)
+            todosLosMensajes.sort((a, b) => {
+              const fechaA = a.fecha ? new Date(a.fecha).getTime() : 0;
+              const fechaB = b.fecha ? new Date(b.fecha).getTime() : 0;
+              return fechaB - fechaA;
+            });
 
-            // Buscar mensajes por idPostulacion si existe
-            if (conductor.idPostulacion) {
-              try {
-                const mensajesRef = collection(db, 'MensajesChat');
-                const mensajesQuery = query(
-                  mensajesRef,
-                  where('idPostulacion', '==', conductor.idPostulacion),
-                );
-                const mensajesSnap = await getDocs(mensajesQuery);
-                
-                if (!mensajesSnap.empty) {
-                  // Obtener todos los mensajes
-                  const todosLosMensajes = mensajesSnap.docs.map(doc => {
-                    const data = doc.data() as any;
-                    return {
-                      id: doc.id,
-                      texto: data.texto || '',
-                      fecha: data.fecha || '',
-                      emisor: data.emisor || '',
-                    };
-                  });
-                  
-                  // Ordenar por fecha
-                  todosLosMensajes.sort((a, b) => {
-                    const fechaA = a.fecha ? new Date(a.fecha).getTime() : 0;
-                    const fechaB = b.fecha ? new Date(b.fecha).getTime() : 0;
-                    return fechaB - fechaA;
-                  });
-                  
-                  // Obtener último mensaje
-                  const ultimoMensaje = todosLosMensajes[0];
-                  conductor.ultimoMensaje = ultimoMensaje.texto || '';
-                  conductor.ultimoMensajeFecha = ultimoMensaje.fecha 
-                    ? new Date(ultimoMensaje.fecha) 
-                    : undefined;
-                  conductor.ultimoMensajeEmisor = ultimoMensaje.emisor || '';
-                  
-                  // Contar mensajes no leídos
-                  const noLeidos = await contarMensajesNoLeidos(todosLosMensajes, rutApoderado, claveChat);
-                  conductor.cantidadNoLeidos = noLeidos;
-                } else {
-                  conductor.cantidadNoLeidos = 0;
-                }
-              } catch (error) {
-                console.error('Error al cargar mensajes:', error);
-                conductor.cantidadNoLeidos = 0;
-              }
-            } else {
-              // Si no hay idPostulacion, buscar por chatId (para chats de AgregarHijo)
-              try {
-                const chatId = `agregar_hijo_${conductor.rutHijo}_${rutApoderado}_${conductor.rutConductor}`;
-                const mensajesRef = collection(db, 'MensajesChat');
-                const mensajesQuery = query(
-                  mensajesRef,
-                  where('chatId', '==', chatId),
-                );
-                const mensajesSnap = await getDocs(mensajesQuery);
-                
-                if (!mensajesSnap.empty) {
-                  // Obtener todos los mensajes
-                  const todosLosMensajes = mensajesSnap.docs.map(doc => {
-                    const data = doc.data() as any;
-                    return {
-                      id: doc.id,
-                      texto: data.texto || '',
-                      fecha: data.fecha || '',
-                      emisor: data.emisor || '',
-                    };
-                  });
-                  
-                  // Ordenar por fecha
-                  todosLosMensajes.sort((a, b) => {
-                    const fechaA = a.fecha ? new Date(a.fecha).getTime() : 0;
-                    const fechaB = b.fecha ? new Date(b.fecha).getTime() : 0;
-                    return fechaB - fechaA;
-                  });
-                  
-                  // Obtener último mensaje
-                  const ultimoMensaje = todosLosMensajes[0];
-                  conductor.ultimoMensaje = ultimoMensaje.texto || '';
-                  conductor.ultimoMensajeFecha = ultimoMensaje.fecha 
-                    ? new Date(ultimoMensaje.fecha) 
-                    : undefined;
-                  conductor.ultimoMensajeEmisor = ultimoMensaje.emisor || '';
-                  
-                  // Contar mensajes no leídos
-                  const noLeidos = await contarMensajesNoLeidos(todosLosMensajes, rutApoderado, claveChat);
-                  conductor.cantidadNoLeidos = noLeidos;
-                } else {
-                  conductor.cantidadNoLeidos = 0;
-                }
-              } catch (error) {
-                console.error('Error al cargar mensajes por chatId:', error);
-                conductor.cantidadNoLeidos = 0;
-              }
+            // Obtener el último mensaje de todos los hijos
+            if (todosLosMensajes.length > 0) {
+              const ultimoMensaje = todosLosMensajes[0];
+              conductor.ultimoMensaje = ultimoMensaje.texto || '';
+              conductor.ultimoMensajeFecha = ultimoMensaje.fecha 
+                ? new Date(ultimoMensaje.fecha) 
+                : undefined;
+              conductor.ultimoMensajeEmisor = ultimoMensaje.emisor || '';
             }
 
-            // Configurar listener en tiempo real para este chat
-            if (claveChat) {
-              configurarListenerChat(conductor, rutApoderado, claveChat, 'conductor');
+            conductor.cantidadNoLeidos = totalNoLeidos;
+
+            // Configurar listener en tiempo real para el primer chat (se actualizará con todos)
+            if (todosLosHijos.length > 0) {
+              const primerHijo = todosLosHijos[0];
+              let primerIdPostulacion = primerHijo.idPostulacion || '';
+              if (!primerIdPostulacion) {
+                try {
+                  const postulacionesRef = collection(db, 'Postulaciones');
+                  const postQuery = query(
+                    postulacionesRef,
+                    where('rutUsuario', '==', rutApoderado),
+                    where('rutHijo', '==', primerHijo.rutHijo),
+                    where('rutConductor', '==', conductor.rutConductor),
+                    limit(1),
+                  );
+                  const postSnap = await getDocs(postQuery);
+                  if (!postSnap.empty) {
+                    primerIdPostulacion = postSnap.docs[0].id;
+                  }
+                } catch (error) {
+                  console.error('Error al buscar postulación:', error);
+                }
+              }
+              const claveChat = obtenerClaveChat(
+                primerIdPostulacion,
+                primerHijo.rutHijo,
+                rutApoderado,
+                conductor.rutConductor
+              );
+              if (claveChat) {
+                configurarListenerChat(conductor, rutApoderado, claveChat, 'conductor');
+              }
             }
           } catch (error) {
             console.error('Error al cargar mensajes para conductor:', error);
@@ -801,7 +877,7 @@ export default function ChatFurgon() {
       // Actualizar contador localmente
       apoderado.cantidadNoLeidos = 0;
       setApoderados(prev => prev.map(a => 
-        a.rutApoderado === apoderado.rutApoderado && a.rutHijo === apoderado.rutHijo
+        a.rutApoderado === apoderado.rutApoderado
           ? { ...a, cantidadNoLeidos: 0 }
           : a
       ));
@@ -884,7 +960,7 @@ export default function ChatFurgon() {
       // Actualizar contador localmente
       conductor.cantidadNoLeidos = 0;
       setConductores(prev => prev.map(c => 
-        c.rutConductor === conductor.rutConductor && c.rutHijo === conductor.rutHijo
+        c.rutConductor === conductor.rutConductor
           ? { ...c, cantidadNoLeidos: 0 }
           : c
       ));
@@ -1014,9 +1090,6 @@ export default function ChatFurgon() {
           </View>
           <View style={styles.chatBody}>
             <View style={styles.chatBodyLeft}>
-              <Text style={styles.hijoNombre} numberOfLines={1}>
-                {item.nombreHijo}
-              </Text>
               {item.ultimoMensaje && (
                 <Text style={styles.ultimoMensaje} numberOfLines={1}>
                   {esMiMensaje && 'Tú: '}
@@ -1068,9 +1141,6 @@ export default function ChatFurgon() {
           </View>
           <View style={styles.chatBody}>
             <View style={styles.chatBodyLeft}>
-              <Text style={styles.hijoNombre} numberOfLines={1}>
-                {item.nombreHijo}
-              </Text>
               {item.ultimoMensaje && (
                 <Text style={styles.ultimoMensaje} numberOfLines={1}>
                   {esMiMensaje && 'Tú: '}
@@ -1148,7 +1218,7 @@ export default function ChatFurgon() {
         <FlatList
           data={apoderados}
           renderItem={renderApoderado}
-          keyExtractor={(item) => `${item.rutApoderado}_${item.rutHijo}`}
+          keyExtractor={(item) => item.rutApoderado}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
         />
@@ -1156,7 +1226,7 @@ export default function ChatFurgon() {
         <FlatList
           data={conductores}
           renderItem={renderConductor}
-          keyExtractor={(item) => `${item.rutConductor}_${item.rutHijo}`}
+          keyExtractor={(item) => item.rutConductor}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
         />
