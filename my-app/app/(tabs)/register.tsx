@@ -5,6 +5,8 @@ import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import React, { useRef, useState } from 'react';
+import { Picker } from '@react-native-picker/picker';
+import { Platform } from 'react-native';
 import {
   Alert,
   Pressable,
@@ -30,6 +32,8 @@ export default function RegisterScreen() {
   const rutAnteriorRef = useRef('');
   const [esConductor, setEsConductor] = useState(false);
   const [aceptaCondiciones, setAceptaCondiciones] = useState(false);
+  const [preguntaSeguridad, setPreguntaSeguridad] = useState('');
+  const [respuestaSeguridad, setRespuestaSeguridad] = useState('');
 
   // Mensajes de error
   const [errores, setErrores] = useState({
@@ -41,7 +45,23 @@ export default function RegisterScreen() {
     repetirContrasena: '',
     rut: '',
     aceptaCondiciones: '',
+    preguntaSeguridad: '',
+    respuestaSeguridad: '',
   });
+
+  // Lista de preguntas de seguridad típicas
+  const preguntasSeguridad = [
+    '¿Cuál es el nombre de tu primera mascota?',
+    '¿Cuál es el nombre de tu madre?',
+    '¿Cuál es el nombre de tu ciudad natal?',
+    '¿Cuál era el nombre de tu mejor amigo/a de la infancia?',
+    '¿Cuál es tu comida favorita?',
+    '¿Cuál es el nombre de tu primera escuela?',
+    '¿Cuál es el nombre de tu película favorita?',
+    '¿Cuál es el apellido de soltera de tu madre?',
+    '¿En qué ciudad naciste?',
+    '¿Cuál es el nombre de tu abuela materna?',
+  ];
 
   const validarEmail = (email: string) => email.includes('@');
 
@@ -255,6 +275,8 @@ export default function RegisterScreen() {
       repetirContrasena: '',
       rut: '',
       aceptaCondiciones: '',
+      preguntaSeguridad: '',
+      respuestaSeguridad: '',
     };
 
     if (!nombres) nuevosErrores.nombres = 'Debes ingresar tu nombre';
@@ -274,6 +296,12 @@ export default function RegisterScreen() {
       nuevosErrores.rut = 'Debes ingresar tu RUT';
     } else if (!validarRUT(rut)) {
       nuevosErrores.rut = 'El RUT debe tener el formato XX.XXX.XXX-X donde el último carácter es un número (0-9) o la letra K';
+    }
+    if (!preguntaSeguridad || preguntaSeguridad === '') {
+      nuevosErrores.preguntaSeguridad = 'Debes seleccionar una pregunta de seguridad';
+    }
+    if (!respuestaSeguridad.trim()) {
+      nuevosErrores.respuestaSeguridad = 'Debes ingresar la respuesta a tu pregunta de seguridad';
     }
     if (!aceptaCondiciones)
       nuevosErrores.aceptaCondiciones = 'Debes aceptar los términos y condiciones para continuar.';
@@ -323,6 +351,8 @@ export default function RegisterScreen() {
       contrasena,
       rut: rutNormalizado, // Guardar RUT sin espacios para consistencia
       rol: esConductor ? 'Conductor' : 'Apoderado',
+      preguntaSeguridad: preguntaSeguridad.trim(),
+      respuestaSeguridad: respuestaSeguridad.trim().toLowerCase(),
     };
 
     try {
@@ -416,6 +446,45 @@ export default function RegisterScreen() {
         maxLength={13}
       />
       {errores.rut ? <Text style={styles.errorText}>{errores.rut}</Text> : null}
+
+      <Text style={styles.sectionTitle}>Pregunta de Seguridad</Text>
+      <Text style={styles.sectionSubtitle}>
+        Selecciona una pregunta que te ayudará a recuperar tu contraseña si la olvidas
+      </Text>
+
+      <View style={styles.pickerContainer}>
+        <Picker
+          selectedValue={preguntaSeguridad}
+          onValueChange={(itemValue) => {
+            setPreguntaSeguridad(itemValue);
+            setErrores((prev) => ({ ...prev, preguntaSeguridad: '' }));
+          }}
+          style={styles.picker}
+          itemStyle={Platform.OS === 'ios' ? styles.pickerItem : undefined}
+        >
+          <Picker.Item label="Selecciona una pregunta..." value="" color="#999" />
+          {preguntasSeguridad.map((pregunta, index) => (
+            <Picker.Item key={index} label={pregunta} value={pregunta} />
+          ))}
+        </Picker>
+      </View>
+      {errores.preguntaSeguridad ? (
+        <Text style={styles.errorText}>{errores.preguntaSeguridad}</Text>
+      ) : null}
+
+      <TextInput
+        style={styles.input}
+        placeholder="Respuesta"
+        value={respuestaSeguridad}
+        onChangeText={(text) => {
+          setRespuestaSeguridad(text);
+          setErrores((prev) => ({ ...prev, respuestaSeguridad: '' }));
+        }}
+        autoCapitalize="none"
+      />
+      {errores.respuestaSeguridad ? (
+        <Text style={styles.errorText}>{errores.respuestaSeguridad}</Text>
+      ) : null}
 
       <View style={styles.switchContainer}>
         <Text style={styles.switchLabel}>Conductor de furgón</Text>
@@ -524,5 +593,38 @@ const styles = StyleSheet.create({
     marginBottom: 5,
     alignSelf: 'flex-start',
     marginLeft: 20,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 15,
+    marginBottom: 5,
+    alignSelf: 'flex-start',
+    marginLeft: 20,
+    color: '#333',
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 10,
+    alignSelf: 'flex-start',
+    marginLeft: 20,
+    marginRight: 20,
+  },
+  pickerContainer: {
+    width: '90%',
+    borderColor: '#127067',
+    borderWidth: 1.5,
+    borderRadius: 20,
+    marginBottom: 10,
+    overflow: 'hidden',
+    backgroundColor: '#fff',
+  },
+  picker: {
+    width: '100%',
+    height: Platform.OS === 'ios' ? 200 : 50,
+  },
+  pickerItem: {
+    fontSize: 16,
   },
 });

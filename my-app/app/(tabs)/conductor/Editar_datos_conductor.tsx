@@ -10,7 +10,9 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  Platform,
 } from 'react-native';
+import { Picker } from '@react-native-picker/picker';
 import { Image } from 'expo-image';
 import { db } from '@/firebaseConfig';
 import { collection, doc, updateDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
@@ -27,6 +29,8 @@ export default function EditarUsuarioScreen() {
   const [correo, setCorreo] = useState('');
   const [telefono, setTelefono] = useState('');
   const [rut, setRut] = useState('');
+  const [preguntaSeguridad, setPreguntaSeguridad] = useState('');
+  const [respuestaSeguridad, setRespuestaSeguridad] = useState('');
   const [rutUsuario, setRutUsuario] = useState('');
   const [userId, setUserId] = useState('');
   const [loading, setLoading] = useState(false);
@@ -38,6 +42,8 @@ export default function EditarUsuarioScreen() {
     correo: '',
     telefono: '',
     rut: '',
+    preguntaSeguridad: '',
+    respuestaSeguridad: '',
   });
 
   useEffect(() => {
@@ -66,6 +72,8 @@ export default function EditarUsuarioScreen() {
           setCorreo(userData.correo || '');
           setTelefono(userData.telefono || '');
           setRut(userData.rut || '');
+          setPreguntaSeguridad(userData.preguntaSeguridad || '');
+          setRespuestaSeguridad(userData.respuestaSeguridad || '');
         } else {
           Alert.alert('Error', 'No se encontraron datos del usuario.');
         }
@@ -79,6 +87,20 @@ export default function EditarUsuarioScreen() {
 
     cargarDatosUsuario();
   }, []);
+
+  // Lista de preguntas de seguridad típicas
+  const preguntasSeguridad = [
+    '¿Cuál es el nombre de tu primera mascota?',
+    '¿Cuál es el nombre de tu madre?',
+    '¿Cuál es el nombre de tu ciudad natal?',
+    '¿Cuál era el nombre de tu mejor amigo/a de la infancia?',
+    '¿Cuál es tu comida favorita?',
+    '¿Cuál es el nombre de tu primera escuela?',
+    '¿Cuál es el nombre de tu película favorita?',
+    '¿Cuál es el apellido de soltera de tu madre?',
+    '¿En qué ciudad naciste?',
+    '¿Cuál es el nombre de tu abuela materna?',
+  ];
 
   const validarEmail = (email: string) => email.includes('@');
 
@@ -96,6 +118,8 @@ export default function EditarUsuarioScreen() {
       correo: !validarEmail(correo) ? 'El correo debe contener un "@"' : '',
       telefono: telefono && !validarTelefono(telefono) ? 'El teléfono debe tener entre 8 y 12 dígitos' : '',
       rut: !rut ? 'Debes ingresar tu RUT' : '',
+      preguntaSeguridad: '',
+      respuestaSeguridad: preguntaSeguridad && preguntaSeguridad !== '' && !respuestaSeguridad.trim() ? 'Debes ingresar la respuesta si has configurado una pregunta' : '',
     };
 
     setErrores(nuevosErrores);
@@ -112,14 +136,22 @@ export default function EditarUsuarioScreen() {
 
       const usuarioRef = doc(db, 'usuarios', userId);
       
-      await updateDoc(usuarioRef, {
+      const datosActualizacion: any = {
         nombres,
         apellidos,
         correo,
         telefono: telefono || '',
         rut,
         actualizadoEn: serverTimestamp(),
-      });
+      };
+
+      // Solo actualizar pregunta y respuesta si se han proporcionado
+      if (preguntaSeguridad.trim()) {
+        datosActualizacion.preguntaSeguridad = preguntaSeguridad.trim();
+        datosActualizacion.respuestaSeguridad = respuestaSeguridad.trim().toLowerCase();
+      }
+
+      await updateDoc(usuarioRef, datosActualizacion);
 
       const nombreCompleto = `${nombres} ${apellidos}`;
       await AsyncStorage.setItem('userName', nombreCompleto);
@@ -222,6 +254,53 @@ export default function EditarUsuarioScreen() {
               onChangeText={setRut}
             />
             {errores.rut ? <Text style={styles.errorText}>{errores.rut}</Text> : null}
+          </View>
+
+          <View style={styles.sectionDivider}>
+            <Text style={styles.sectionTitle}>Pregunta de Seguridad</Text>
+            <Text style={styles.sectionSubtitle}>
+              Configura una pregunta y respuesta para recuperar tu contraseña si la olvidas
+            </Text>
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Pregunta de Seguridad</Text>
+            <View style={styles.pickerContainer}>
+              <Picker
+                selectedValue={preguntaSeguridad}
+                onValueChange={(itemValue) => {
+                  setPreguntaSeguridad(itemValue);
+                  setErrores((prev) => ({ ...prev, preguntaSeguridad: '' }));
+                }}
+                style={styles.picker}
+                itemStyle={Platform.OS === 'ios' ? styles.pickerItem : undefined}
+              >
+                <Picker.Item label="Selecciona una pregunta..." value="" color="#999" />
+                {preguntasSeguridad.map((pregunta, index) => (
+                  <Picker.Item key={index} label={pregunta} value={pregunta} />
+                ))}
+              </Picker>
+            </View>
+            {errores.preguntaSeguridad ? (
+              <Text style={styles.errorText}>{errores.preguntaSeguridad}</Text>
+            ) : null}
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Respuesta</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Respuesta"
+              value={respuestaSeguridad}
+              onChangeText={(text) => {
+                setRespuestaSeguridad(text);
+                setErrores((prev) => ({ ...prev, respuestaSeguridad: '' }));
+              }}
+              autoCapitalize="none"
+            />
+            {errores.respuestaSeguridad ? (
+              <Text style={styles.errorText}>{errores.respuestaSeguridad}</Text>
+            ) : null}
           </View>
 
         </View>
@@ -347,5 +426,44 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 5,
     marginLeft: 5,
+  },
+  sectionDivider: {
+    marginTop: 20,
+    marginBottom: 10,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#e0e0e0',
+    width: '100%',
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 5,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 15,
+  },
+  multilineInput: {
+    minHeight: 60,
+    textAlignVertical: 'top',
+  },
+  pickerContainer: {
+    width: '100%',
+    borderColor: '#127067',
+    borderWidth: 1.5,
+    borderRadius: 10,
+    marginBottom: 10,
+    overflow: 'hidden',
+    backgroundColor: '#F5F7F8',
+  },
+  picker: {
+    width: '100%',
+    height: Platform.OS === 'ios' ? 200 : 50,
+  },
+  pickerItem: {
+    fontSize: 16,
   },
 });

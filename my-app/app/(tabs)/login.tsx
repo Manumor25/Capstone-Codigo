@@ -141,6 +141,13 @@ export default function LoginScreen() {
       <Pressable style={styles.button} onPress={manejarLogin}>
         <Text style={styles.buttonText}>Iniciar Sesión</Text>
       </Pressable>
+
+      <Pressable
+        style={styles.forgotPasswordLink}
+        onPress={() => router.push('/(tabs)/forgot-password')}
+      >
+        <Text style={styles.forgotPasswordText}>¿Olvidaste tu contraseña?</Text>
+      </Pressable>
     </View>
   );
 }
@@ -197,5 +204,13 @@ const styles = StyleSheet.create({
   buttonText: {
     color: '#fff',
     fontSize: 16,
+  },
+  forgotPasswordLink: {
+    marginTop: 15,
+  },
+  forgotPasswordText: {
+    color: '#127067',
+    fontSize: 14,
+    textDecorationLine: 'underline',
   },
 });
