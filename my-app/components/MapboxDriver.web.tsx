@@ -259,10 +259,17 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
 
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/dark-v11',
+        style: 'mapbox://styles/mapbox/streets-v12',
         center: [initialLocation.lng, initialLocation.lat],
-        zoom: 14
+        zoom: 14,
+        pitch: 0,
+        bearing: 0
       });
+
+      // Deshabilitar rotación e inclinación 3D
+      map.current.dragRotate.disable();
+      map.current.touchPitch.disable();
+      map.current.touchZoomRotate.disableRotation();
     }
 
     // Cleanup
@@ -319,7 +326,7 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
       cuerpo.setAttribute('width', '32');
       cuerpo.setAttribute('height', '20');
       cuerpo.setAttribute('rx', '3');
-      cuerpo.setAttribute('fill', '#127067');
+      cuerpo.setAttribute('fill', '#FFD700');
       svg.appendChild(cuerpo);
 
       // Ventanas delanteras
@@ -408,6 +415,8 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
       map.current.flyTo({
         center: [locationToUse.longitude, locationToUse.latitude],
         zoom: zoomLevel,
+        pitch: 0,
+        bearing: 0,
         duration: 1500,
         essential: true
       });
@@ -481,6 +490,8 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
     map.current.flyTo({
       center: [coords.longitude, coords.latitude],
       zoom: zoomLevel,
+      pitch: 0,
+      bearing: 0,
       duration: 800,
       essential: true,
     });
@@ -530,32 +541,30 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
           aria-label="Centrar mapa en ubicación actual"
           type="button"
           onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = '#127067';
-            e.currentTarget.style.color = '#fff';
-            e.currentTarget.style.transform = 'scale(1.1)';
-            e.currentTarget.style.boxShadow = '0 6px 24px rgba(18, 112, 103, 0.6)';
+            e.currentTarget.style.backgroundColor = '#e0e0e0';
+            e.currentTarget.style.color = '#333';
+            e.currentTarget.style.boxShadow = '0 2px 12px rgba(0,0,0,0.2)';
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = '#fff';
-            e.currentTarget.style.color = '#127067';
-            e.currentTarget.style.transform = 'scale(1)';
-            e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.5)';
+            e.currentTarget.style.backgroundColor = '#f5f5f5';
+            e.currentTarget.style.color = '#666';
+            e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
           }}
         >
           <svg
-            width="32"
-            height="32"
+            width="24"
+            height="24"
             viewBox="0 0 24 24"
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
             style={{ pointerEvents: 'none' }}
           >
-            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" fill="none" />
-            <circle cx="12" cy="12" r="4" fill="currentColor" />
+            <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.5" fill="none" />
+            <circle cx="12" cy="12" r="3" fill="currentColor" />
             <path
-              d="M12 1V5M12 19V23M1 12H5M19 12H23"
+              d="M12 2V6M12 18V22M2 12H6M18 12H22"
               stroke="currentColor"
-              strokeWidth="2.5"
+              strokeWidth="1.5"
               strokeLinecap="round"
             />
           </svg>
@@ -571,7 +580,8 @@ const styles = {
     width: '100%',
     position: 'relative' as const,
     borderRadius: '15px',
-    overflow: 'hidden'
+    overflow: 'hidden',
+    border: '2px solid #000',
   },
   mapContainer: {
     height: '100%',
@@ -617,12 +627,12 @@ const styles = {
     position: 'absolute' as const,
     bottom: '20px',
     right: '20px',
-    width: '60px',
-    height: '60px',
-    backgroundColor: '#fff',
-    border: '3px solid #127067',
-    borderRadius: '50%',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+    width: '48px',
+    height: '48px',
+    backgroundColor: '#f5f5f5',
+    border: 'none',
+    borderRadius: '8px',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
@@ -631,6 +641,6 @@ const styles = {
     transition: 'all 0.3s ease',
     padding: '0',
     outline: 'none',
-    color: '#127067',
+    color: '#666',
   },
 };

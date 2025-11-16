@@ -74,7 +74,7 @@ const styles = StyleSheet.create({
   furgonBody: {
     width: 40,
     height: 24,
-    backgroundColor: '#127067',
+    backgroundColor: '#FFD700',
     borderRadius: 3,
     alignItems: 'flex-start',
     justifyContent: 'flex-start',

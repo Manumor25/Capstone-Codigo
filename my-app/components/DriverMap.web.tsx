@@ -40,7 +40,7 @@ export default function DriverMap({ style, initialRegion }: Props) {
 
   return (
     <View style={[styles.container, style]}>
-      <div ref={mapContainer} style={styles.map} />
+      <div ref={mapContainer} style={{ ...styles.map, border: '2px solid #000', borderRadius: '15px' }} />
     </View>
   );
 }

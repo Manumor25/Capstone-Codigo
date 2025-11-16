@@ -33,6 +33,8 @@ export default function DetalleNinoScreen() {
   const [datosNino, setDatosNino] = useState<DatosNino | null>(null);
   const [loading, setLoading] = useState(true);
   const [expulsando, setExpulsando] = useState(false);
+  const [nombreApoderado, setNombreApoderado] = useState<string>('');
+  const [telefonoApoderado, setTelefonoApoderado] = useState<string>('');
 
   const rutNino = params.rut?.toString() || '';
   const rutApoderadoParam = params.rutApoderado?.toString() || '';
@@ -70,12 +72,42 @@ export default function DetalleNinoScreen() {
         }
 
         const data = snapshot.data() || {};
+        const rutApoderadoFinal = data.rutUsuario || data.rutApoderado || rutApoderadoParam;
         setDatosNino({
           nombres: data.nombres || 'Sin nombre',
           apellidos: data.apellidos || '',
           fichaMedica: data.fichaMedica,
-          rutApoderado: data.rutUsuario || data.rutApoderado || rutApoderadoParam,
+          rutApoderado: rutApoderadoFinal,
         });
+
+        // Cargar información del apoderado
+        if (rutApoderadoFinal) {
+          try {
+            const usuariosRef = collection(db, 'usuarios');
+            const apoderadoQuery = query(
+              usuariosRef,
+              where('rut', '==', rutApoderadoFinal.trim()),
+              limit(1),
+            );
+            const apoderadoSnap = await getDocs(apoderadoQuery);
+            
+            if (!apoderadoSnap.empty) {
+              const apoderadoData = apoderadoSnap.docs[0].data();
+              const nombres = apoderadoData.nombres || '';
+              const apellidos = apoderadoData.apellidos || '';
+              const nombreCompleto = `${nombres} ${apellidos}`.trim() || nombres || 'No disponible';
+              setNombreApoderado(nombreCompleto);
+              setTelefonoApoderado(apoderadoData.telefono || apoderadoData.telefonoContacto || 'No disponible');
+            } else {
+              setNombreApoderado('No disponible');
+              setTelefonoApoderado('No disponible');
+            }
+          } catch (errorApoderado) {
+            console.error('Error al cargar información del apoderado:', errorApoderado);
+            setNombreApoderado('No disponible');
+            setTelefonoApoderado('No disponible');
+          }
+        }
 
         if (!nombreFurgonParam || !patenteFurgonParam || !listaPasajeroId) {
           try {
@@ -395,7 +427,15 @@ export default function DetalleNinoScreen() {
           <Text style={styles.infoValue}>{datosNino.rutApoderado || 'No disponible'}</Text>
         </View>
         <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Furgon:</Text>
+          <Text style={styles.infoLabel}>Nombre apoderado:</Text>
+          <Text style={styles.infoValue}>{nombreApoderado || 'Cargando...'}</Text>
+        </View>
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Teléfono apoderado:</Text>
+          <Text style={styles.infoValue}>{telefonoApoderado || 'Cargando...'}</Text>
+        </View>
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Furgon Asignado:</Text>
           <Text style={styles.infoValue}>{nombreFurgon || 'Sin nombre asignado'}</Text>
         </View>
       </View>
