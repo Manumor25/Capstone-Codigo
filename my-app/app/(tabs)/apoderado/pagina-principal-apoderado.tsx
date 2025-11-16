@@ -140,99 +140,208 @@ export default function PaginaPrincipal() {
         setTieneInscripcion(tieneInscripcionActiva);
         setCargandoInscripcion(false);
         
+        // Obtener hijos inscritos en furgones
+        const obtenerHijosInscritos = async () => {
+          try {
+            const listaPasajerosRef = collection(db, 'lista_pasajeros');
+            const inscripcionQuery = query(
+              listaPasajerosRef,
+              where('rutApoderado', '==', rutGuardado)
+            );
+            const inscripcionSnapshot = await getDocs(inscripcionQuery);
+            
+            // Obtener RUTs de hijos inscritos activos
+            const rutsHijosInscritos = new Set<string>();
+            inscripcionSnapshot.docs.forEach((docSnap) => {
+              const data = docSnap.data();
+              const estado = (data.estado || 'aceptada').toString().toLowerCase();
+              const tieneFechaBaja = !!data.fechaBaja;
+              const estadoDeBaja = estado === 'baja' || estado === 'cancelada';
+              
+              // Solo incluir inscripciones activas
+              if ((estado === 'aceptada' || estado === 'activa') && !tieneFechaBaja && !estadoDeBaja) {
+                const rutHijo = (data.rutHijo || '').toString().trim();
+                if (rutHijo) {
+                  rutsHijosInscritos.add(rutHijo);
+                  // También agregar versión normalizada
+                  rutsHijosInscritos.add(normalizarRut(rutHijo));
+                }
+              }
+            });
+            
+            return rutsHijosInscritos;
+          } catch (error) {
+            console.error('Error al obtener hijos inscritos:', error);
+            return new Set<string>();
+          }
+        };
+        
+        // Listener para actualizar cuando cambien las inscripciones
+        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+        const inscripcionQuery = query(
+          listaPasajerosRef,
+          where('rutApoderado', '==', rutGuardado)
+        );
+        
+        let rutsHijosInscritosCache = new Set<string>();
+        let hijosSnapshotCache: any = null;
+        
+        // Función para procesar y filtrar hijos
+        const procesarHijos = (querySnapshot: any, rutsInscritos: Set<string>) => {
+          if (!querySnapshot || querySnapshot.empty) {
+            setHijos([]);
+            setHijoSeleccionado(null);
+            setLoadingHijos(false);
+            return;
+          }
+          
+          // Filtrar hijos que realmente pertenecen al usuario actual Y están inscritos
+          const listaHijos: Hijo[] = querySnapshot.docs
+            .map((doc: any) => {
+              const data = doc.data() || {};
+              return {
+                id: doc.id,
+                nombres: data.nombres || 'Sin nombre',
+                apellidos: data.apellidos || 'Sin apellido',
+                rut: data.rut || 'Sin RUT',
+                edad: data.edad !== undefined ? data.edad : '-',
+                fechaNacimiento: data.fechaNacimiento || 'No disponible',
+                horarioAsistencia: Array.isArray(data.horarioAsistencia) 
+                  ? data.horarioAsistencia.map((h: any) => ({
+                      id: h.id || h.dia || '',
+                      etiqueta: h.etiqueta || h.dia || '',
+                      asiste: h.asiste === true,
+                      horaEntrada: h.horaEntrada || '',
+                      horaSalida: h.horaSalida || '',
+                    }))
+                  : [],
+                rutUsuario: data.rutUsuario || '',
+              };
+            })
+            .filter((hijo: any) => {
+              // Verificar que el hijo pertenece al usuario actual
+              const rutUsuarioHijo = (hijo.rutUsuario || '').toString().trim();
+              const rutUsuarioHijoNormalizado = normalizarRut(rutUsuarioHijo);
+              
+              const perteneceAlUsuario = (
+                rutUsuarioHijo === rutUsuarioTrim ||
+                rutUsuarioHijoNormalizado === rutUsuarioNormalizado
+              );
+              
+              if (!perteneceAlUsuario) {
+                return false;
+              }
+              
+              // Verificar que el hijo está inscrito en un furgón
+              const rutHijo = (hijo.rut || '').toString().trim();
+              const rutHijoNormalizado = normalizarRut(rutHijo);
+              
+              const estaInscrito = rutsInscritos.has(rutHijo) || rutsInscritos.has(rutHijoNormalizado);
+              
+              return estaInscrito;
+            });
+          
+          console.log('Hijos cargados/actualizados para usuario (página principal):', {
+            rutUsuario: rutUsuarioTrim,
+            rutUsuarioNormalizado,
+            totalHijosEnDB: querySnapshot.docs.length,
+            hijosInscritos: rutsInscritos.size,
+            hijosFiltrados: listaHijos.length,
+          });
+          
+          // Log para debug de horarios
+          listaHijos.forEach((hijo) => {
+            if (hijo.horarioAsistencia && hijo.horarioAsistencia.length > 0) {
+              console.log(`📅 Horarios de ${hijo.nombres} ${hijo.apellidos}:`, hijo.horarioAsistencia);
+            } else {
+              console.log(`⚠️ ${hijo.nombres} ${hijo.apellidos} NO tiene horarios configurados`);
+            }
+          });
+          
+          setHijos(listaHijos);
+          
+          // Actualizar el hijo seleccionado si existe en la nueva lista
+          setHijoSeleccionado((hijoActual) => {
+            if (hijoActual) {
+              // Buscar el hijo actualizado en la nueva lista
+              const hijoActualizado = listaHijos.find((h) => h.rut === hijoActual.rut);
+              if (hijoActualizado) {
+                console.log('🔄 Actualizando hijo seleccionado con datos actualizados:', {
+                  nombre: `${hijoActualizado.nombres} ${hijoActualizado.apellidos}`,
+                  horarios: hijoActualizado.horarioAsistencia?.length || 0,
+                });
+                return hijoActualizado;
+              }
+            }
+            
+            // Si no hay hijo seleccionado o no se encuentra, seleccionar el primero o el guardado
+            if (listaHijos.length > 0) {
+              const hijoInicial = rutHijoPrevio
+                ? listaHijos.find((hijo) => hijo.rut === rutHijoPrevio) ?? listaHijos[0]
+                : listaHijos[0];
+              if (hijoInicial) {
+                AsyncStorage.setItem('rutHijoSeleccionado', hijoInicial.rut).catch((error) => {
+                  console.error('No se pudo guardar el RUT del hijo seleccionado:', error);
+                });
+              }
+              return hijoInicial;
+            }
+            return null;
+          });
+          
+          setLoadingHijos(false);
+        };
+        
+        const unsubscribeInscripciones = onSnapshot(
+          inscripcionQuery,
+          (snapshot) => {
+            // Actualizar cache de RUTs de hijos inscritos
+            rutsHijosInscritosCache.clear();
+            snapshot.docs.forEach((docSnap) => {
+              const data = docSnap.data();
+              const estado = (data.estado || 'aceptada').toString().toLowerCase();
+              const tieneFechaBaja = !!data.fechaBaja;
+              const estadoDeBaja = estado === 'baja' || estado === 'cancelada';
+              
+              // Solo incluir inscripciones activas
+              if ((estado === 'aceptada' || estado === 'activa') && !tieneFechaBaja && !estadoDeBaja) {
+                const rutHijo = (data.rutHijo || '').toString().trim();
+                if (rutHijo) {
+                  rutsHijosInscritosCache.add(rutHijo);
+                  rutsHijosInscritosCache.add(normalizarRut(rutHijo));
+                }
+              }
+            });
+            
+            // Si ya tenemos el snapshot de hijos, reprocesar con los nuevos RUTs
+            if (hijosSnapshotCache) {
+              procesarHijos(hijosSnapshotCache, rutsHijosInscritosCache);
+            }
+          },
+          (error) => {
+            console.error('Error en listener de inscripciones:', error);
+          }
+        );
+        
         // Usar onSnapshot para actualización en tiempo real de los hijos
         const unsubscribeHijos = onSnapshot(
           q,
-          (querySnapshot) => {
-            if (!querySnapshot.empty) {
-              // Filtrar hijos que realmente pertenecen al usuario actual
-              const listaHijos: Hijo[] = querySnapshot.docs
-                .map((doc) => {
-                  const data = doc.data() || {};
-                  return {
-                    id: doc.id,
-                    nombres: data.nombres || 'Sin nombre',
-                    apellidos: data.apellidos || 'Sin apellido',
-                    rut: data.rut || 'Sin RUT',
-                    edad: data.edad !== undefined ? data.edad : '-',
-                    fechaNacimiento: data.fechaNacimiento || 'No disponible',
-                    horarioAsistencia: Array.isArray(data.horarioAsistencia) 
-                      ? data.horarioAsistencia.map((h: any) => ({
-                          id: h.id || h.dia || '',
-                          etiqueta: h.etiqueta || h.dia || '',
-                          asiste: h.asiste === true,
-                          horaEntrada: h.horaEntrada || '',
-                          horaSalida: h.horaSalida || '',
-                        }))
-                      : [],
-                    rutUsuario: data.rutUsuario || '',
-                  };
-                })
-                .filter((hijo: any) => {
-                  // Verificar que el hijo pertenece al usuario actual
-                  const rutUsuarioHijo = (hijo.rutUsuario || '').toString().trim();
-                  const rutUsuarioHijoNormalizado = normalizarRut(rutUsuarioHijo);
-                  
-                  // Comparar tanto el RUT original como el normalizado
-                  return (
-                    rutUsuarioHijo === rutUsuarioTrim ||
-                    rutUsuarioHijoNormalizado === rutUsuarioNormalizado
-                  );
-                });
-              
-              console.log('Hijos cargados/actualizados para usuario (página principal):', {
-                rutUsuario: rutUsuarioTrim,
-                rutUsuarioNormalizado,
-                totalHijosEnDB: querySnapshot.docs.length,
-                hijosFiltrados: listaHijos.length,
-              });
-              
-              // Log para debug de horarios
-              listaHijos.forEach((hijo) => {
-                if (hijo.horarioAsistencia && hijo.horarioAsistencia.length > 0) {
-                  console.log(`📅 Horarios de ${hijo.nombres} ${hijo.apellidos}:`, hijo.horarioAsistencia);
-                } else {
-                  console.log(`⚠️ ${hijo.nombres} ${hijo.apellidos} NO tiene horarios configurados`);
-                }
-              });
-              
-              setHijos(listaHijos);
-              
-              // Actualizar el hijo seleccionado si existe en la nueva lista
-              setHijoSeleccionado((hijoActual) => {
-                if (hijoActual) {
-                  // Buscar el hijo actualizado en la nueva lista
-                  const hijoActualizado = listaHijos.find((h) => h.rut === hijoActual.rut);
-                  if (hijoActualizado) {
-                    console.log('🔄 Actualizando hijo seleccionado con datos actualizados:', {
-                      nombre: `${hijoActualizado.nombres} ${hijoActualizado.apellidos}`,
-                      horarios: hijoActualizado.horarioAsistencia?.length || 0,
-                    });
-                    return hijoActualizado;
-                  }
-                }
-                
-                // Si no hay hijo seleccionado o no se encuentra, seleccionar el primero o el guardado
-                if (listaHijos.length > 0) {
-                  const hijoInicial = rutHijoPrevio
-                    ? listaHijos.find((hijo) => hijo.rut === rutHijoPrevio) ?? listaHijos[0]
-                    : listaHijos[0];
-                  if (hijoInicial) {
-                    AsyncStorage.setItem('rutHijoSeleccionado', hijoInicial.rut).catch((error) => {
-                      console.error('No se pudo guardar el RUT del hijo seleccionado:', error);
-                    });
-                  }
-                  return hijoInicial;
-                }
-                return null;
-              });
-              
-              setLoadingHijos(false);
-            } else {
-              setHijos([]);
-              setHijoSeleccionado(null);
-              setLoadingHijos(false);
+          async (querySnapshot) => {
+            // Guardar snapshot para poder reprocesar cuando cambien las inscripciones
+            hijosSnapshotCache = querySnapshot;
+            
+            // Obtener RUTs de hijos inscritos (usar cache si está disponible)
+            const rutsHijosInscritos = rutsHijosInscritosCache.size > 0 
+              ? rutsHijosInscritosCache 
+              : await obtenerHijosInscritos();
+            
+            // Actualizar cache si estaba vacío
+            if (rutsHijosInscritosCache.size === 0 && rutsHijosInscritos.size > 0) {
+              rutsHijosInscritos.forEach(rut => rutsHijosInscritosCache.add(rut));
             }
+            
+            // Procesar hijos con los RUTs de inscritos
+            procesarHijos(querySnapshot, rutsHijosInscritos);
           },
           (error) => {
             console.error('Error en listener de hijos:', error);
@@ -242,6 +351,7 @@ export default function PaginaPrincipal() {
         
         return () => {
           unsubscribeHijos();
+          unsubscribeInscripciones();
         };
       } catch (error) {
         console.error('Error al cargar datos:', error);

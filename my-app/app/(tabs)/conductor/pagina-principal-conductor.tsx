@@ -75,6 +75,9 @@ export default function PaginaPrincipalConductor() {
     let unsubscribeAgregarHijo1: (() => void) | null = null;
     let unsubscribeAgregarHijo2: (() => void) | null = null;
     let unsubscribeAgregarHijo3: (() => void) | null = null;
+    let unsubscribeBaja1: (() => void) | null = null;
+    let unsubscribeBaja2: (() => void) | null = null;
+    let unsubscribeBaja3: (() => void) | null = null;
 
     const cargarDatos = async () => {
       try {
@@ -149,7 +152,7 @@ export default function PaginaPrincipalConductor() {
         const todasLasAlertasUnicas = new Map<string, any>();
         
         // Función para procesar y combinar alertas
-        const procesarYActualizarAlertas = () => {
+        const procesarYActualizarAlertas = async () => {
           const alertasArray = Array.from(todasLasAlertasUnicas.values());
           
           console.log('✓ Total de alertas únicas encontradas:', alertasArray.length);
@@ -157,7 +160,7 @@ export default function PaginaPrincipalConductor() {
           console.log('✓ Patentes del conductor:', Array.from(patentesSet));
 
           // Filtrar alertas por RUT del conductor (normalizado) y por patentes
-          const listaFiltrada = alertasArray.filter((alerta) => {
+          const alertasFiltradasInicial = alertasArray.filter((alerta) => {
             // Verificar RUT del destinatario (normalizado o original)
             const rutDestAlerta = normalizarRut(alerta.rutDestinatario || '');
             const rutDestOriginal = normalizarRut(alerta.rutDestinatarioOriginal || '');
@@ -193,6 +196,26 @@ export default function PaginaPrincipalConductor() {
               return true;
             }
             
+            // Para alertas de tipo "Baja", no requerir idPostulacion
+            if (alerta.tipoAlerta === 'Baja') {
+              // Verificar patente si existe
+              if (alerta.patenteFurgon) {
+                const patenteAlertaNormalizada = normalizarPatente(alerta.patenteFurgon);
+                const tienePatente = patentesSet.has(alerta.patenteFurgon) || patentesSet.has(patenteAlertaNormalizada);
+                
+                if (!tienePatente && patentesSet.size > 0) {
+                  console.log('✗ Alerta Baja filtrada por patente:', alerta.patenteFurgon);
+                  return false;
+                }
+              }
+              console.log('✓ Alerta Baja aceptada:', {
+                id: alerta.id,
+                descripcion: alerta.descripcion?.substring(0, 30),
+                patente: alerta.patenteFurgon,
+              });
+              return true;
+            }
+            
             // Para alertas de tipo "Postulacion", verificar que tenga idPostulacion
             if (alerta.tipoAlerta === 'Postulacion') {
               if (!alerta.idPostulacion) {
@@ -221,8 +244,36 @@ export default function PaginaPrincipalConductor() {
             });
             return true;
           });
+
+          // Verificar estado de postulaciones para alertas de tipo "Postulacion"
+          const alertasConEstado = await Promise.all(
+            alertasFiltradasInicial.map(async (alerta) => {
+              // Si no es una alerta de postulación, mantenerla sin cambios
+              if (alerta.tipoAlerta !== 'Postulacion' || !alerta.idPostulacion) {
+                return { ...alerta, estadoPostulacion: null };
+              }
+
+              // Verificar el estado de la postulación
+              try {
+                const postulacionRef = doc(db, 'Postulaciones', alerta.idPostulacion);
+                const postulacionSnap = await getDoc(postulacionRef);
+                
+                if (!postulacionSnap.exists()) {
+                  return { ...alerta, estadoPostulacion: null };
+                }
+
+                const postulacionData = postulacionSnap.data();
+                const estado = (postulacionData?.estado || '').toString().toLowerCase();
+                
+                return { ...alerta, estadoPostulacion: estado };
+              } catch (error) {
+                console.warn('⚠ Error al verificar estado de postulación:', alerta.idPostulacion, error);
+                return { ...alerta, estadoPostulacion: null };
+              }
+            })
+          );
           
-          const alertasOrdenadas = listaFiltrada.sort((a, b) => {
+          const alertasOrdenadas = alertasConEstado.sort((a, b) => {
             const fechaA = a.fecha ? a.fecha.getTime() : 0;
             const fechaB = b.fecha ? b.fecha.getTime() : 0;
             return fechaB - fechaA;
@@ -232,7 +283,8 @@ export default function PaginaPrincipalConductor() {
           if (alertasOrdenadas.length > 0) {
             console.log('✓ Alertas mostradas:', alertasOrdenadas.map(a => ({ 
               descripcion: a.descripcion?.substring(0, 30), 
-              patente: a.patenteFurgon 
+              patente: a.patenteFurgon,
+              estado: a.estadoPostulacion
             })));
           }
           
@@ -259,6 +311,7 @@ export default function PaginaPrincipalConductor() {
                   : data.fecha ? new Date(data.fecha) : null;
                 todasLasAlertasUnicas.set(docSnap.id, {
                   id: docSnap.id,
+                  tipoAlerta: data.tipoAlerta || 'Postulacion',
                   descripcion: data.descripcion || 'Sin descripcion',
                   idPostulacion: data.parametros?.idPostulacion || data.idPostulacion || null,
                   rutaDestino: data.rutaDestino || '/chat-validacion',
@@ -297,6 +350,7 @@ export default function PaginaPrincipalConductor() {
                   : data.fecha ? new Date(data.fecha) : null;
                 todasLasAlertasUnicas.set(docSnap.id, {
                   id: docSnap.id,
+                  tipoAlerta: data.tipoAlerta || 'Postulacion',
                   descripcion: data.descripcion || 'Sin descripcion',
                   idPostulacion: data.parametros?.idPostulacion || data.idPostulacion || null,
                   rutaDestino: data.rutaDestino || '/chat-validacion',
@@ -335,6 +389,7 @@ export default function PaginaPrincipalConductor() {
                   : data.fecha ? new Date(data.fecha) : null;
                 todasLasAlertasUnicas.set(docSnap.id, {
                   id: docSnap.id,
+                  tipoAlerta: data.tipoAlerta || 'Postulacion',
                   descripcion: data.descripcion || 'Sin descripcion',
                   idPostulacion: data.parametros?.idPostulacion || data.idPostulacion || null,
                   rutaDestino: data.rutaDestino || '/chat-validacion',
@@ -470,6 +525,124 @@ export default function PaginaPrincipalConductor() {
         } catch (error6) {
           console.warn('⚠ No se pudo crear listener 6 (AgregarHijo rutDestinatario original):', error6);
         }
+
+        // Listeners para alertas de tipo "Baja"
+        // Listener 7: Buscar alertas Baja con RUT normalizado
+        try {
+          const query7 = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'Baja'),
+            where('rutDestinatario', '==', rutNormalizado),
+            limit(50)
+          );
+          
+          unsubscribeBaja1 = onSnapshot(
+            query7,
+            (snapshot) => {
+              console.log('✓ Listener 7 (Baja rutDestinatario normalizado):', snapshot.docs.length, 'alertas');
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as any;
+                const fecha = data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha ? new Date(data.fecha) : null;
+                todasLasAlertasUnicas.set(docSnap.id, {
+                  id: docSnap.id,
+                  tipoAlerta: data.tipoAlerta || 'Baja',
+                  descripcion: data.descripcion || 'Sin descripcion',
+                  idPostulacion: data.parametros?.idPostulacion || null,
+                  rutaDestino: data.rutaDestino || '/conductor/pagina-principal-conductor',
+                  parametros: data.parametros || {},
+                  fecha,
+                  patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+                  rutDestinatario: data.rutDestinatario,
+                  rutDestinatarioOriginal: data.rutDestinatarioOriginal,
+                });
+              });
+              procesarYActualizarAlertas();
+            },
+            (error) => console.warn('⚠ Error en listener 7 (Baja):', error)
+          );
+        } catch (error7) {
+          console.warn('⚠ No se pudo crear listener 7 (Baja rutDestinatario normalizado):', error7);
+        }
+
+        // Listener 8: Buscar alertas Baja con RUT original en rutDestinatarioOriginal
+        try {
+          const query8 = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'Baja'),
+            where('rutDestinatarioOriginal', '==', rutGuardado),
+            limit(50)
+          );
+          
+          unsubscribeBaja2 = onSnapshot(
+            query8,
+            (snapshot) => {
+              console.log('✓ Listener 8 (Baja rutDestinatarioOriginal):', snapshot.docs.length, 'alertas');
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as any;
+                const fecha = data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha ? new Date(data.fecha) : null;
+                todasLasAlertasUnicas.set(docSnap.id, {
+                  id: docSnap.id,
+                  tipoAlerta: data.tipoAlerta || 'Baja',
+                  descripcion: data.descripcion || 'Sin descripcion',
+                  idPostulacion: data.parametros?.idPostulacion || null,
+                  rutaDestino: data.rutaDestino || '/conductor/pagina-principal-conductor',
+                  parametros: data.parametros || {},
+                  fecha,
+                  patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+                  rutDestinatario: data.rutDestinatario,
+                  rutDestinatarioOriginal: data.rutDestinatarioOriginal,
+                });
+              });
+              procesarYActualizarAlertas();
+            },
+            (error) => console.warn('⚠ Error en listener 8 (Baja):', error)
+          );
+        } catch (error8) {
+          console.warn('⚠ No se pudo crear listener 8 (Baja rutDestinatarioOriginal):', error8);
+        }
+
+        // Listener 9: Buscar alertas Baja con RUT original en rutDestinatario
+        try {
+          const query9 = query(
+            alertasRef,
+            where('tipoAlerta', '==', 'Baja'),
+            where('rutDestinatario', '==', rutGuardado),
+            limit(50)
+          );
+          
+          unsubscribeBaja3 = onSnapshot(
+            query9,
+            (snapshot) => {
+              console.log('✓ Listener 9 (Baja rutDestinatario original):', snapshot.docs.length, 'alertas');
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as any;
+                const fecha = data.creadoEn && typeof data.creadoEn.toDate === 'function'
+                  ? data.creadoEn.toDate()
+                  : data.fecha ? new Date(data.fecha) : null;
+                todasLasAlertasUnicas.set(docSnap.id, {
+                  id: docSnap.id,
+                  tipoAlerta: data.tipoAlerta || 'Baja',
+                  descripcion: data.descripcion || 'Sin descripcion',
+                  idPostulacion: data.parametros?.idPostulacion || null,
+                  rutaDestino: data.rutaDestino || '/conductor/pagina-principal-conductor',
+                  parametros: data.parametros || {},
+                  fecha,
+                  patenteFurgon: (data.patenteFurgon || '').toString().trim(),
+                  rutDestinatario: data.rutDestinatario,
+                  rutDestinatarioOriginal: data.rutDestinatarioOriginal,
+                });
+              });
+              procesarYActualizarAlertas();
+            },
+            (error) => console.warn('⚠ Error en listener 9 (Baja):', error)
+          );
+        } catch (error9) {
+          console.warn('⚠ No se pudo crear listener 9 (Baja rutDestinatario original):', error9);
+        }
       } catch (error) {
         console.error('Error al cargar datos:', error);
         Alert.alert('Error', 'No se pudieron cargar los datos.');
@@ -497,6 +670,15 @@ export default function PaginaPrincipalConductor() {
       }
       if (unsubscribeAgregarHijo3) {
         unsubscribeAgregarHijo3();
+      }
+      if (unsubscribeBaja1) {
+        unsubscribeBaja1();
+      }
+      if (unsubscribeBaja2) {
+        unsubscribeBaja2();
+      }
+      if (unsubscribeBaja3) {
+        unsubscribeBaja3();
       }
     };
   }, []);
@@ -1034,7 +1216,19 @@ export default function PaginaPrincipalConductor() {
                             setModalAgregarHijoVisible(true);
                             return;
                           }
-                          // Para otras alertas, navegar normalmente
+                          // Si es una alerta de tipo Baja, no hacer nada (solo informativa)
+                          if (alerta.tipoAlerta === 'Baja') {
+                            return;
+                          }
+                          // Si es una postulación aceptada, rechazada o dada de baja, no hacer nada (solo informativa)
+                          if (alerta.tipoAlerta === 'Postulacion' && alerta.estadoPostulacion && 
+                              (alerta.estadoPostulacion === 'aceptada' || 
+                               alerta.estadoPostulacion === 'rechazada' ||
+                               alerta.estadoPostulacion === 'baja' ||
+                               alerta.estadoPostulacion === 'cancelada')) {
+                            return;
+                          }
+                          // Para otras alertas (postulaciones pendientes), navegar normalmente
                           if (!alerta.idPostulacion) return;
                           const params = {
                             ...alerta.parametros,
@@ -1046,7 +1240,17 @@ export default function PaginaPrincipalConductor() {
                           });
                         }}
                       >
-                        <Text style={styles.alertaBotonTexto}>Ver información</Text>
+                        <Text style={styles.alertaBotonTexto}>
+                          {alerta.tipoAlerta === 'Baja' 
+                            ? 'Entendido' 
+                            : alerta.tipoAlerta === 'Postulacion' && alerta.estadoPostulacion && 
+                              (alerta.estadoPostulacion === 'aceptada' || 
+                               alerta.estadoPostulacion === 'rechazada' || 
+                               alerta.estadoPostulacion === 'baja' ||
+                               alerta.estadoPostulacion === 'cancelada')
+                            ? 'Entendido'
+                            : 'Ver'}
+                        </Text>
                       </TouchableHighlight>
                     </View>
                   </View>

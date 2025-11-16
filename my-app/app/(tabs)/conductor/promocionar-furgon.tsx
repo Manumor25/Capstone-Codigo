@@ -34,8 +34,10 @@ export default function PublicarFurgonScreen() {
   const [comuna, setComuna] = useState('');
   const [patenteSeleccionada, setPatenteSeleccionada] = useState('');
   const [patentes, setPatentes] = useState<string[]>([]);
+  const [vehiculos, setVehiculos] = useState<Array<{ patente: string; cupos?: number }>>([]);
   const [rutUsuario, setRutUsuario] = useState('');
   const [loading, setLoading] = useState(false);
+  const [cupos, setCupos] = useState('');
 
   const [errores, setErrores] = useState({
     nombre: '',
@@ -43,6 +45,7 @@ export default function PublicarFurgonScreen() {
     precio: '',
     comuna: '',
     patente: '',
+    cupos: '',
   });
 
   useEffect(() => {
@@ -59,16 +62,27 @@ export default function PublicarFurgonScreen() {
         const q = query(vehiculosRef, where('rutUsuario', '==', rutGuardado));
         const snapshot = await getDocs(q);
 
-        const listaPatentes = snapshot.docs
+        const listaVehiculos = snapshot.docs
           .map((doc) => {
             const data = doc.data();
-            return data.patente ? data.patente.toUpperCase() : null;
+            return {
+              patente: data.patente ? data.patente.toUpperCase() : null,
+              cupos: data.cupos ? Number(data.cupos) : undefined,
+            };
           })
-          .filter((patente) => patente !== null);
+          .filter((vehiculo) => vehiculo.patente !== null) as Array<{ patente: string; cupos?: number }>;
 
+        const listaPatentes = listaVehiculos.map((v) => v.patente);
+        setVehiculos(listaVehiculos);
         setPatentes(listaPatentes);
         if (listaPatentes.length > 0) {
-          setPatenteSeleccionada(listaPatentes[0]);
+          const primeraPatente = listaPatentes[0];
+          setPatenteSeleccionada(primeraPatente);
+          // Cargar cupos del primer vehículo si tiene
+          const primerVehiculo = listaVehiculos.find((v) => v.patente === primeraPatente);
+          if (primerVehiculo?.cupos) {
+            setCupos(primerVehiculo.cupos.toString());
+          }
         } else {
           setPatenteSeleccionada('');
         }
@@ -82,12 +96,16 @@ export default function PublicarFurgonScreen() {
   }, []);
 
   const manejarPublicarFurgon = async () => {
+    const cuposNumero = parseInt(cupos, 10);
     const nuevosErrores = {
       nombre: !nombre ? 'Ingresa el nombre' : '',
       colegio: !colegio ? 'Ingresa el colegio' : '',
       precio: !precio ? 'Ingresa el precio' : '',
       comuna: !comuna ? 'Ingresa la comuna' : '',
       patente: !patenteSeleccionada ? 'Selecciona una patente' : '',
+      cupos: !cupos ? 'Ingresa la cantidad de cupos' : 
+             isNaN(cuposNumero) || cuposNumero < 1 || cuposNumero > 120 
+             ? 'Los cupos deben ser un número entre 1 y 120' : '',
     };
 
     setErrores(nuevosErrores);
@@ -109,6 +127,7 @@ export default function PublicarFurgonScreen() {
         comuna,
         patente: patenteSeleccionada,
         rutUsuario,
+        cupos: cuposNumero,
         creadoEn: serverTimestamp(),
       });
 
@@ -179,11 +198,30 @@ export default function PublicarFurgonScreen() {
       />
       {errores.comuna ? <Text style={styles.errorText}>{errores.comuna}</Text> : null}
 
+      <TextInput
+        style={styles.input}
+        placeholder="Cupos disponibles (1-120)"
+        value={cupos}
+        onChangeText={setCupos}
+        keyboardType="numeric"
+        maxLength={3}
+      />
+      {errores.cupos ? <Text style={styles.errorText}>{errores.cupos}</Text> : null}
+
       <Text style={styles.label}>Selecciona patente</Text>
       <View style={styles.pickerContainer}>
         <Picker
           selectedValue={patenteSeleccionada}
-          onValueChange={(value) => setPatenteSeleccionada(value)}
+          onValueChange={(value) => {
+            setPatenteSeleccionada(value);
+            // Cargar cupos del vehículo seleccionado
+            const vehiculoSeleccionado = vehiculos.find((v) => v.patente === value);
+            if (vehiculoSeleccionado?.cupos) {
+              setCupos(vehiculoSeleccionado.cupos.toString());
+            } else {
+              setCupos('');
+            }
+          }}
           style={styles.picker}
         >
           {patentes.length > 0 ? (

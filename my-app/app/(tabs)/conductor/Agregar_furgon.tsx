@@ -37,6 +37,7 @@ export default function AgregarFurgonScreen() {
   const [patente, setPatente] = useState('');
   const [modelo, setModelo] = useState('');
   const [ano, setAno] = useState('');
+  const [cupos, setCupos] = useState('');
   const [fotoSeleccionada, setFotoSeleccionada] = useState<FotoSeleccionada | null>(null);
   const [rutUsuario, setRutUsuario] = useState('');
   const [loading, setLoading] = useState(false);
@@ -45,6 +46,7 @@ export default function AgregarFurgonScreen() {
     patente: '',
     modelo: '',
     ano: '',
+    cupos: '',
     fotoFurgon: '',
   });
 
@@ -110,10 +112,14 @@ export default function AgregarFurgonScreen() {
   };
 
   const manejarGuardarVehiculo = async () => {
+    const cuposNumero = parseInt(cupos, 10);
     const nuevosErrores = {
       patente: !patente ? 'Ingresa la patente del vehículo' : '',
       modelo: !modelo ? 'Ingresa el modelo del vehículo' : '',
       ano: !ano ? 'Ingresa el año del vehículo' : '',
+      cupos: !cupos ? 'Ingresa la cantidad de cupos' : 
+             isNaN(cuposNumero) || cuposNumero < 1 || cuposNumero > 20 
+             ? 'Los cupos deben ser un número entre 1 y 20' : '',
       fotoFurgon: !fotoSeleccionada ? 'Debes cargar una foto del furgón.' : '',
     };
 
@@ -134,6 +140,7 @@ export default function AgregarFurgonScreen() {
         patente: patente.trim().toUpperCase(),
         modelo: modelo.trim(),
         ano: ano.trim(),
+        cupos: cuposNumero,
         rutUsuario,
         creadoEn: serverTimestamp(),
       };
@@ -150,6 +157,7 @@ export default function AgregarFurgonScreen() {
       setPatente('');
       setModelo('');
       setAno('');
+      setCupos('');
       setFotoSeleccionada(null);
       router.push('/(tabs)/conductor/perfil-conductor');
     } catch (error) {
@@ -207,6 +215,17 @@ export default function AgregarFurgonScreen() {
             maxLength={4}
           />
           {errores.ano ? <Text style={styles.errorText}>{errores.ano}</Text> : null}
+
+          <TextInput
+            style={styles.input}
+            placeholder="Cupos disponibles (1-20)"
+            placeholderTextColor="#127067"
+            value={cupos}
+            onChangeText={setCupos}
+            keyboardType="numeric"
+            maxLength={2}
+          />
+          {errores.cupos ? <Text style={styles.errorText}>{errores.cupos}</Text> : null}
 
           <Pressable
             style={[styles.uploadBox, fotoPreviewUri && styles.uploadBoxFilled]}
