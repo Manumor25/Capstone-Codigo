@@ -4,7 +4,7 @@ import { makeShadow } from '@/utils/shadow';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Link, useRouter } from 'expo-router';
-import { collection, getDocs, limit, orderBy, query, where, onSnapshot, Unsubscribe, deleteDoc, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, limit, orderBy, query, where, onSnapshot, Unsubscribe, deleteDoc, doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
@@ -50,6 +50,9 @@ interface Alerta {
   parametros?: Record<string, any>;
   patenteFurgon?: string;
   fecha?: Date | null;
+  leida?: boolean;
+  rutHijo?: string;
+  nombreHijo?: string;
 }
 
 export default function PaginaPrincipal() {
@@ -75,6 +78,7 @@ export default function PaginaPrincipal() {
   const [rutConductor, setRutConductor] = useState<string>('');
   const [cargandoUbicacion, setCargandoUbicacion] = useState(true);
   const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0);
+  const [estadoViajeHijo, setEstadoViajeHijo] = useState<string>(''); // 'recogido', 'entregado', o ''
   useSyncRutActivo();
 
   useEffect(() => {
@@ -545,6 +549,71 @@ export default function PaginaPrincipal() {
     };
   }, []);
 
+  // Listener para obtener el estado del viaje del hijo
+  useEffect(() => {
+    if (!hijoSeleccionado || !rutUsuario) {
+      setEstadoViajeHijo('');
+      return;
+    }
+
+    let unsubscribeEstadoViaje: (() => void) | null = null;
+
+    const obtenerEstadoViaje = async () => {
+      try {
+        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+        const estadoQuery = query(
+          listaPasajerosRef,
+          where('rutHijo', '==', hijoSeleccionado.rut),
+          where('rutApoderado', '==', rutUsuario.trim()),
+          limit(1)
+        );
+
+        unsubscribeEstadoViaje = onSnapshot(
+          estadoQuery,
+          (snapshot) => {
+            if (!snapshot.empty) {
+              const data = snapshot.docs[0].data();
+              const estado = data.estadoViaje || '';
+              
+              // Verificar si hay una alerta leída correspondiente
+              // Si hay una alerta leída de tipo "Recogido" o "Entregado" para este hijo,
+              // no mostrar el estado en verde
+              const alertaLeida = alertas.find(
+                (a) =>
+                  (a.tipo === 'Recogido' || a.tipo === 'Entregado') &&
+                  a.rutHijo === hijoSeleccionado.rut &&
+                  a.leida === true
+              );
+              
+              // Solo mostrar el estado si no hay una alerta leída correspondiente
+              if (alertaLeida) {
+                setEstadoViajeHijo('');
+              } else {
+                setEstadoViajeHijo(estado);
+              }
+            } else {
+              setEstadoViajeHijo('');
+            }
+          },
+          (error) => {
+            console.error('Error al obtener estado del viaje:', error);
+            setEstadoViajeHijo('');
+          }
+        );
+      } catch (error) {
+        console.error('Error al configurar listener de estado de viaje:', error);
+      }
+    };
+
+    obtenerEstadoViaje();
+
+    return () => {
+      if (unsubscribeEstadoViaje) {
+        unsubscribeEstadoViaje();
+      }
+    };
+  }, [hijoSeleccionado, rutUsuario, alertas]);
+
   // Función para normalizar RUT (eliminar puntos y guiones)
   const normalizarRut = (rut: string): string => {
     return rut.replace(/[^0-9kK]/g, '').toUpperCase();
@@ -729,12 +798,15 @@ export default function PaginaPrincipal() {
         if (rutCoincide) {
           const alerta: Alerta = {
             id: docSnap.id,
-            tipo: data.tipoAlerta || 'Alerta',
+            tipo: data.tipoAlerta || data.tipo || 'Alerta',
             descripcion: data.descripcion || 'Sin descripcion',
             rutaDestino: data.rutaDestino,
             parametros: data.parametros,
             patenteFurgon: (data.patenteFurgon || '').toString().trim().toUpperCase(),
             fecha,
+            leida: data.leida || false,
+            rutHijo: data.rutHijo || '',
+            nombreHijo: data.nombreHijo || '',
           };
           
           // Usar Map para evitar duplicados
@@ -1068,6 +1140,39 @@ export default function PaginaPrincipal() {
     }
   };
 
+  const handleMarcarAlertaLeida = async (alerta: Alerta) => {
+    try {
+      // Marcar la alerta como leída en Firestore
+      await setDoc(
+        doc(db, 'Alertas', alerta.id),
+        {
+          leida: true,
+          fechaLectura: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      // Si la alerta es de tipo "Recogido" o "Entregado" y corresponde al hijo seleccionado,
+      // ocultar el estado en verde
+      if (
+        (alerta.tipo === 'Recogido' || alerta.tipo === 'Entregado') &&
+        hijoSeleccionado &&
+        alerta.rutHijo === hijoSeleccionado.rut
+      ) {
+        // El estado se ocultará automáticamente cuando se actualice el listener
+        console.log('✅ Alerta marcada como leída, estado en verde se ocultará');
+      }
+
+      // Actualizar la alerta localmente
+      setAlertas((prev) =>
+        prev.map((a) => (a.id === alerta.id ? { ...a, leida: true } : a))
+      );
+    } catch (error) {
+      console.error('Error al marcar alerta como leída:', error);
+      Alert.alert('Error', 'No se pudo marcar la alerta como leída.');
+    }
+  };
+
   const seleccionarHijo = useCallback((hijo: Hijo) => {
     console.log('✅ Hijo seleccionado:', {
       nombre: `${hijo.nombres} ${hijo.apellidos}`,
@@ -1324,16 +1429,28 @@ export default function PaginaPrincipal() {
               >
                 {alertasMostradas.map((alerta) => {
                   const esUrgente = alerta.tipo.toLowerCase() === 'urgencia';
+                  const esRecogidoOEntregado = alerta.tipo === 'Recogido' || alerta.tipo === 'Entregado';
                   const iconColor = esUrgente ? '#a94442' : '#f39c12';
                   const iconName = esUrgente ? 'alert' : 'alert-circle';
                   return (
-                    <Pressable key={alerta.id} style={styles.alertaItem} onPress={() => handleAlertaPress(alerta)}>
-                      <Ionicons name={iconName} size={20} color={iconColor} />
-                      <View style={styles.alertaTexts}>
-                        <Text style={[styles.alertaTipo, esUrgente && styles.alertaTipoUrgente]}>{alerta.tipo}</Text>
-                        <Text style={styles.alertaDescripcion}>{alerta.descripcion}</Text>
-                      </View>
-                    </Pressable>
+                    <View key={alerta.id} style={styles.alertaItemContainer}>
+                      <Pressable style={styles.alertaItem} onPress={() => handleAlertaPress(alerta)}>
+                        <Ionicons name={iconName} size={20} color={iconColor} />
+                        <View style={styles.alertaTexts}>
+                          <Text style={[styles.alertaTipo, esUrgente && styles.alertaTipoUrgente]}>{alerta.tipo}</Text>
+                          <Text style={styles.alertaDescripcion}>{alerta.descripcion}</Text>
+                        </View>
+                      </Pressable>
+                      {esRecogidoOEntregado && !alerta.leida && (
+                        <TouchableHighlight
+                          style={styles.okButton}
+                          underlayColor="#0c5c4e"
+                          onPress={() => handleMarcarAlertaLeida(alerta)}
+                        >
+                          <Text style={styles.okButtonText}>OK</Text>
+                        </TouchableHighlight>
+                      )}
+                    </View>
                   );
                 })}
               </ScrollView>
@@ -1394,7 +1511,15 @@ export default function PaginaPrincipal() {
       {hijoSeleccionado && (
         <View key={`horarios-${hijoSeleccionado.rut}`} style={styles.horariosPanel}>
           <View style={styles.horariosHeader}>
-            <Text style={styles.horariosTitle}>Horario de Clases</Text>
+            <View style={styles.horariosTitleContainer}>
+              <Text style={styles.horariosTitle}>Horario de Clases</Text>
+              {estadoViajeHijo === 'recogido' && (
+                <Text style={styles.estadoViaje}>Abordo</Text>
+              )}
+              {estadoViajeHijo === 'entregado' && (
+                <Text style={styles.estadoViaje}>Entregado</Text>
+              )}
+            </View>
             <Text style={styles.horariosSubtitle}>{hijoSeleccionado.nombres} {hijoSeleccionado.apellidos}</Text>
           </View>
           <View style={styles.horariosTable}>
@@ -1795,11 +1920,32 @@ const styles = StyleSheet.create({
     color: '#999',
     fontStyle: 'italic',
   },
+  alertaItemContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    gap: 10,
+  },
   alertaItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
+    flex: 1,
     gap: 10,
+  },
+  okButton: {
+    backgroundColor: '#127067',
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    minWidth: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  okButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   alertasScroll: {
     maxHeight: 240,
@@ -1860,11 +2006,21 @@ const styles = StyleSheet.create({
   horariosHeader: {
     marginBottom: 12,
   },
+  horariosTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
   horariosTitle: {
     fontSize: 18,
     fontWeight: 'bold',
     color: '#127067',
-    marginBottom: 4,
+  },
+  estadoViaje: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#28a745',
   },
   horariosSubtitle: {
     fontSize: 14,

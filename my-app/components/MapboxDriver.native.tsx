@@ -4,10 +4,20 @@ import MapView, { Marker } from 'react-native-maps';
 
 type LatLng = { latitude: number; longitude: number };
 
+interface RouteWaypoint {
+  coordinates: LatLng;
+  name: string;
+  rutHijo?: string;
+}
+
 interface Props {
   accessToken?: string;
   driverLocation?: LatLng;
   simulatedPath?: LatLng[];
+  route?: {
+    waypoints: RouteWaypoint[];
+    routeGeometry?: any;
+  };
 }
 
 // Componente personalizado para el marcador de furgón

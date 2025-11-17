@@ -7,16 +7,28 @@ import { collection, getDocs, query, where, limit } from 'firebase/firestore';
 
 type LatLng = { latitude: number; longitude: number };
 
+interface RouteWaypoint {
+  coordinates: LatLng;
+  name: string;
+  rutHijo?: string;
+}
+
 interface Props {
   accessToken?: string;
   driverLocation?: LatLng;
   simulatedPath?: LatLng[];
+  route?: {
+    waypoints: RouteWaypoint[];
+    routeGeometry?: any; // GeoJSON LineString
+  };
 }
 
-export default function MapboxDriver({ accessToken, driverLocation, simulatedPath }: Props) {
+export default function MapboxDriver({ accessToken, driverLocation, simulatedPath, route }: Props) {
   const mapContainer = useRef(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const markerRef = useRef<mapboxgl.Marker | null>(null);
+  const routeMarkersRef = useRef<mapboxgl.Marker[]>([]);
+  const routeLayerRef = useRef<string | null>(null);
   const [direccion, setDireccion] = useState<string>('');
   const [userLocation, setUserLocation] = useState<LatLng | null>(null);
   
@@ -429,6 +441,122 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
       });
     }
   }, [userLocation, driverLocation, direccion, simulatedPath]);
+
+  // Efecto para mostrar la ruta con múltiples destinos
+  useEffect(() => {
+    if (!map.current || !route || !route.waypoints || route.waypoints.length === 0) {
+      // Limpiar ruta anterior si no hay nueva ruta
+      if (map.current && routeLayerRef.current) {
+        if (map.current.getLayer(routeLayerRef.current)) {
+          map.current.removeLayer(routeLayerRef.current);
+        }
+        if (map.current.getSource(routeLayerRef.current)) {
+          map.current.removeSource(routeLayerRef.current);
+        }
+        routeLayerRef.current = null;
+      }
+      // Limpiar marcadores de destino
+      routeMarkersRef.current.forEach(marker => marker.remove());
+      routeMarkersRef.current = [];
+      return;
+    }
+
+    // Limpiar marcadores anteriores
+    routeMarkersRef.current.forEach(marker => marker.remove());
+    routeMarkersRef.current = [];
+
+    // Limpiar capa de ruta anterior
+    if (routeLayerRef.current) {
+      if (map.current.getLayer(routeLayerRef.current)) {
+        map.current.removeLayer(routeLayerRef.current);
+      }
+      if (map.current.getSource(routeLayerRef.current)) {
+        map.current.removeSource(routeLayerRef.current);
+      }
+    }
+
+    // Agregar marcadores para cada destino
+    route.waypoints.forEach((waypoint, index) => {
+      const el = document.createElement('div');
+      el.className = 'route-waypoint-marker';
+      el.style.width = '32px';
+      el.style.height = '32px';
+      el.style.borderRadius = '50%';
+      el.style.backgroundColor = '#127067';
+      el.style.border = '3px solid #fff';
+      el.style.display = 'flex';
+      el.style.alignItems = 'center';
+      el.style.justifyContent = 'center';
+      el.style.color = '#fff';
+      el.style.fontWeight = 'bold';
+      el.style.fontSize = '14px';
+      el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+      el.textContent = (index + 1).toString();
+
+      if (map.current) {
+        const marker = new mapboxgl.Marker({ element: el })
+          .setLngLat([waypoint.coordinates.longitude, waypoint.coordinates.latitude])
+          .setPopup(
+            new mapboxgl.Popup({ offset: 25, closeButton: true })
+              .setHTML(`<div style="font-weight: 600; color: #127067; padding: 4px;">${waypoint.name}</div>`)
+          )
+          .addTo(map.current);
+        
+        routeMarkersRef.current.push(marker);
+      }
+
+    });
+
+    // Agregar línea de ruta si hay geometría
+    if (route.routeGeometry) {
+      const sourceId = 'route-source';
+      const layerId = 'route-layer';
+
+      routeLayerRef.current = layerId;
+
+      if (!map.current.getSource(sourceId)) {
+        map.current.addSource(sourceId, {
+          type: 'geojson',
+          data: route.routeGeometry,
+        });
+      } else {
+        (map.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(route.routeGeometry);
+      }
+
+      if (!map.current.getLayer(layerId)) {
+        map.current.addLayer({
+          id: layerId,
+          type: 'line',
+          source: sourceId,
+          layout: {
+            'line-join': 'round',
+            'line-cap': 'round',
+          },
+          paint: {
+            'line-color': '#127067',
+            'line-width': 4,
+            'line-opacity': 0.75,
+          },
+        });
+      }
+
+      // Ajustar el mapa para mostrar toda la ruta
+      if (route.waypoints.length > 0) {
+        const bounds = new mapboxgl.LngLatBounds();
+        route.waypoints.forEach(waypoint => {
+          bounds.extend([waypoint.coordinates.longitude, waypoint.coordinates.latitude]);
+        });
+        if (driverLocation || userLocation) {
+          const locationToUse = driverLocation || userLocation;
+          bounds.extend([locationToUse!.longitude, locationToUse!.latitude]);
+        }
+        map.current.fitBounds(bounds, {
+          padding: { top: 50, bottom: 50, left: 50, right: 50 },
+          maxZoom: 16,
+        });
+      }
+    }
+  }, [route, driverLocation, userLocation]);
 
   if (!tokenToUse && !accessToken) {
     return (

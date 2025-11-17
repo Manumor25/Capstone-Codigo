@@ -27,6 +27,10 @@ interface Pasajero {
   rutHijo: string;
   rutApoderado: string;
   patenteFurgon: string;
+  estadoViaje?: string;
+  direccion?: string;
+  coordenadas?: { latitude: number; longitude: number };
+  distancia?: number;
 }
 
 export default function PaginaPrincipalConductor() {
@@ -40,9 +44,16 @@ export default function PaginaPrincipalConductor() {
   const [rutConductor, setRutConductor] = useState<string>('');
   const [ubicacionActual, setUbicacionActual] = useState<{ latitude: number; longitude: number } | null>(null);
   const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
+  const ubicacionActualRef = useRef<{ latitude: number; longitude: number } | null>(null);
   const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0);
   const [modalAgregarHijoVisible, setModalAgregarHijoVisible] = useState(false);
+  const [modalTerminarRutaVisible, setModalTerminarRutaVisible] = useState(false);
   const [alertaSeleccionada, setAlertaSeleccionada] = useState<any | null>(null);
+  const [rutaGenerada, setRutaGenerada] = useState<{
+    waypoints: Array<{ coordinates: { latitude: number; longitude: number }; name: string; rutHijo?: string }>;
+    routeGeometry?: any;
+  } | null>(null);
+  const [generandoRuta, setGenerandoRuta] = useState(false);
   useSyncRutActivo();
   const router = useRouter();
   const hayAlertasSinRevisar = useMemo(() => {
@@ -68,6 +79,145 @@ export default function PaginaPrincipalConductor() {
   // Función para normalizar patente (eliminar espacios y convertir a mayúsculas)
   const normalizarPatente = (patente: string) => patente.trim().toUpperCase().replace(/\s+/g, '');
 
+  // Función para calcular distancia entre dos puntos (Haversine)
+  const calcularDistancia = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 6371; // Radio de la Tierra en km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // Distancia en km
+  };
+
+  // Función para procesar y ordenar pasajeros
+  const procesarYOrdenarPasajeros = async (
+    pasajerosSnapshot: any,
+    ubicacionConductorActual: { latitude: number; longitude: number }
+  ): Promise<Pasajero[]> => {
+    const pasajerosLista: Pasajero[] = [];
+    const MAPBOX_TOKEN = 'pk.eyJ1IjoiYmFydG94IiwiYSI6ImNtaGpxaGZudzE4NHMycnB0bnMwdjVtbHIifQ.Makrf18R1Z9Wo4V-yMXUYw';
+
+    console.log('🔄 Procesando pasajeros... Total en snapshot:', pasajerosSnapshot.docs.length);
+
+    // Procesar cada pasajero
+    for (const docSnap of pasajerosSnapshot.docs) {
+      const data = docSnap.data() || {};
+      const estadoViajeOriginal = (data.estadoViaje || '').toString().trim();
+      const estadoViaje = estadoViajeOriginal.toLowerCase();
+      
+      // Verificar estado de la inscripción (si existe)
+      const estadoInscripcion = (data.estado || 'aceptada').toString().trim().toLowerCase();
+      const tieneFechaBaja = !!data.fechaBaja;
+      const estadoDeBaja = estadoInscripcion === 'baja' || estadoInscripcion === 'cancelada';
+      
+      console.log(`  Procesando: ${data.nombreHijo || 'Sin nombre'}, Estado viaje: "${estadoViajeOriginal}", Estado inscripción: "${estadoInscripcion}"`);
+      
+      // Filtrar solo los que NO han sido entregados (comparar en minúsculas para ser más flexible)
+      // Este es el filtro principal - solo excluir los entregados
+      if (estadoViaje === 'entregado') {
+        console.log(`    ❌ Filtrado (entregado): ${data.nombreHijo}`);
+        continue;
+      }
+      
+      // Opcionalmente filtrar inscripciones inactivas (pero ser más permisivo)
+      // Solo filtrar si explícitamente está dado de baja
+      if (tieneFechaBaja || estadoDeBaja) {
+        console.log(`    ⚠️ Inscripción inactiva pero incluyendo: ${data.nombreHijo}`);
+        // No continuar aquí - incluir todos los que no estén entregados
+      }
+
+      // Obtener dirección del apoderado
+      let direccion = '';
+      let coordenadas: { latitude: number; longitude: number } | undefined;
+      
+      try {
+        const usuariosRef = collection(db, 'usuarios');
+        const apoderadoQuery = query(
+          usuariosRef,
+          where('rut', '==', data.rutApoderado?.trim() || ''),
+          limit(1)
+        );
+        const apoderadoSnap = await getDocs(apoderadoQuery);
+        
+        if (!apoderadoSnap.empty) {
+          const apoderadoData = apoderadoSnap.docs[0].data();
+          direccion = apoderadoData.direccion || '';
+          
+          // Si hay coordenadas guardadas, usarlas
+          if (apoderadoData.latitude && apoderadoData.longitude) {
+            coordenadas = {
+              latitude: apoderadoData.latitude,
+              longitude: apoderadoData.longitude,
+            };
+          } else if (direccion && MAPBOX_TOKEN) {
+            // Geocodificar dirección
+            try {
+              const direccionConPais = `${direccion}, Chile`;
+              const encodedAddress = encodeURIComponent(direccionConPais);
+              const geocodeResponse = await fetch(
+                `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedAddress}.json?access_token=${MAPBOX_TOKEN}&limit=1&country=cl&types=address`
+              );
+              const geocodeData = await geocodeResponse.json();
+              
+              if (geocodeData.features && geocodeData.features.length > 0) {
+                const [lng, lat] = geocodeData.features[0].center;
+                coordenadas = { latitude: lat, longitude: lng };
+              }
+            } catch (error) {
+              console.error(`Error al geocodificar dirección de ${data.nombreHijo}:`, error);
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error al obtener dirección para ${data.nombreHijo}:`, error);
+      }
+
+      // Calcular distancia si hay coordenadas
+      let distancia: number | undefined;
+      if (coordenadas) {
+        distancia = calcularDistancia(
+          ubicacionConductorActual.latitude,
+          ubicacionConductorActual.longitude,
+          coordenadas.latitude,
+          coordenadas.longitude
+        );
+      }
+
+      // Agregar el pasajero a la lista incluso si no tiene coordenadas
+      // (esto asegura que siempre aparezcan en la lista)
+      pasajerosLista.push({
+        id: docSnap.id,
+        nombreHijo: data.nombreHijo || 'Sin nombre',
+        nombreApoderado: data.nombreApoderado || 'Sin apoderado',
+        rutHijo: data.rutHijo || '',
+        rutApoderado: data.rutApoderado || '',
+        patenteFurgon: data.patenteFurgon || '',
+        estadoViaje: estadoViajeOriginal, // Mantener el estado original
+        direccion,
+        coordenadas,
+        distancia,
+      });
+      
+      console.log(`    ✅ Agregado: ${data.nombreHijo || 'Sin nombre'}, Estado: "${estadoViajeOriginal}", Dirección: ${direccion || 'sin dirección'}, Coordenadas: ${coordenadas ? 'sí' : 'no'}`);
+    }
+
+    console.log(`📊 Total pasajeros procesados: ${pasajerosLista.length}`);
+
+    // Ordenar por distancia (más cercano primero)
+    // Los que no tienen distancia van al final
+    pasajerosLista.sort((a, b) => {
+      if (a.distancia === undefined && b.distancia === undefined) return 0;
+      if (a.distancia === undefined) return 1;
+      if (b.distancia === undefined) return -1;
+      return a.distancia - b.distancia;
+    });
+
+    return pasajerosLista;
+  };
+
   useEffect(() => {
     let unsubscribeAlertas1: (() => void) | null = null;
     let unsubscribeAlertas2: (() => void) | null = null;
@@ -78,6 +228,7 @@ export default function PaginaPrincipalConductor() {
     let unsubscribeBaja1: (() => void) | null = null;
     let unsubscribeBaja2: (() => void) | null = null;
     let unsubscribeBaja3: (() => void) | null = null;
+    let unsubscribePasajeros: (() => void) | null = null;
 
     const cargarDatos = async () => {
       try {
@@ -115,31 +266,87 @@ export default function PaginaPrincipalConductor() {
         // Cargar pasajeros del conductor
         try {
           const listaPasajerosRef = collection(db, 'lista_pasajeros');
+          console.log('🔍 Buscando pasajeros con RUT conductor:', rutGuardado);
+          
           const pasajerosSnapshot = await getDocs(
             query(listaPasajerosRef, where('rutConductor', '==', rutGuardado))
           );
 
-          const pasajerosLista: Pasajero[] = [];
-          pasajerosSnapshot.forEach((docSnap) => {
-            const data = docSnap.data() || {};
-            pasajerosLista.push({
-              id: docSnap.id,
-              nombreHijo: data.nombreHijo || 'Sin nombre',
-              nombreApoderado: data.nombreApoderado || 'Sin apoderado',
-              rutHijo: data.rutHijo || '',
-              rutApoderado: data.rutApoderado || '',
-              patenteFurgon: data.patenteFurgon || '',
-            });
+          console.log('📋 Pasajeros encontrados en DB:', pasajerosSnapshot.docs.length);
+          if (pasajerosSnapshot.docs.length === 0) {
+            console.log('⚠️ No se encontraron pasajeros. Verificando si hay pasajeros en la colección...');
+            // Intentar obtener algunos pasajeros sin filtro para debug
+            const todosLosPasajeros = await getDocs(listaPasajerosRef);
+            console.log('📊 Total de pasajeros en la colección (sin filtro):', todosLosPasajeros.docs.length);
+            if (todosLosPasajeros.docs.length > 0) {
+              console.log('🔍 Primeros 3 pasajeros encontrados (para debug):');
+              todosLosPasajeros.docs.slice(0, 3).forEach((doc) => {
+                const data = doc.data();
+                console.log(`  - RUT Conductor en DB: "${data.rutConductor}", Nombre: ${data.nombreHijo}`);
+              });
+            }
+          }
+          
+          pasajerosSnapshot.docs.forEach((doc) => {
+            const data = doc.data();
+            console.log('  -', data.nombreHijo, 'Estado viaje:', data.estadoViaje || 'sin estado', 'Estado inscripción:', data.estado || 'sin estado');
           });
 
+          // Obtener ubicación actual del conductor
+          const ubicacionConductorActual = ubicacionActual || { latitude: -33.45, longitude: -70.6667 };
+          
+          const pasajerosLista = await procesarYOrdenarPasajeros(pasajerosSnapshot, ubicacionConductorActual);
+          console.log('✅ Pasajeros procesados (no entregados):', pasajerosLista.length);
           setPasajeros(pasajerosLista);
 
-          // Obtener el siguiente niño (el primero de la lista)
-          if (pasajerosLista.length > 0) {
-            setSiguienteNino(pasajerosLista[0]);
+          // Obtener el siguiente niño (el más cercano que no ha sido entregado)
+          const siguienteNinoNoEntregado = pasajerosLista.find(p => {
+            const estado = (p.estadoViaje || '').toString().trim().toLowerCase();
+            return estado !== 'entregado';
+          });
+          if (siguienteNinoNoEntregado) {
+            setSiguienteNino(siguienteNinoNoEntregado);
+            console.log('👶 Siguiente niño:', siguienteNinoNoEntregado.nombreHijo);
+          } else {
+            setSiguienteNino(null);
+            console.log('⚠️ No hay siguiente niño asignado');
           }
         } catch (errorPasajeros) {
-          console.error('Error al cargar pasajeros:', errorPasajeros);
+          console.error('❌ Error al cargar pasajeros:', errorPasajeros);
+        }
+
+        // Listener en tiempo real para pasajeros
+        try {
+          const listaPasajerosRef = collection(db, 'lista_pasajeros');
+          const pasajerosQuery = query(listaPasajerosRef, where('rutConductor', '==', rutGuardado));
+          
+          unsubscribePasajeros = onSnapshot(
+            pasajerosQuery,
+            async (snapshot) => {
+              // Obtener ubicación actualizada del ref (siempre el valor más reciente)
+              const ubicacionActualizada = ubicacionActualRef.current || { latitude: -33.45, longitude: -70.6667 };
+              const pasajerosLista = await procesarYOrdenarPasajeros(snapshot, ubicacionActualizada);
+              setPasajeros(pasajerosLista);
+
+              // Obtener el siguiente niño (el más cercano que no ha sido entregado)
+              const siguienteNinoNoEntregado = pasajerosLista.find(p => {
+                const estado = (p.estadoViaje || '').toString().trim().toLowerCase();
+                return estado !== 'entregado';
+              });
+              if (siguienteNinoNoEntregado) {
+                setSiguienteNino(siguienteNinoNoEntregado);
+                console.log('👶 Siguiente niño (listener):', siguienteNinoNoEntregado.nombreHijo);
+              } else {
+                setSiguienteNino(null);
+                console.log('⚠️ No hay siguiente niño asignado (listener)');
+              }
+            },
+            (error) => {
+              console.error('Error en listener de pasajeros:', error);
+            }
+          );
+        } catch (errorListener) {
+          console.error('Error al configurar listener de pasajeros:', errorListener);
         }
 
         // Configurar listeners en tiempo real para alertas de postulación
@@ -680,8 +887,11 @@ export default function PaginaPrincipalConductor() {
       if (unsubscribeBaja3) {
         unsubscribeBaja3();
       }
+      if (unsubscribePasajeros) {
+        unsubscribePasajeros();
+      }
     };
-  }, []);
+  }, [rutConductor, ubicacionActual]);
 
   // Obtener y actualizar ubicación en tiempo real
   useEffect(() => {
@@ -708,6 +918,7 @@ export default function PaginaPrincipalConductor() {
             longitude: location.coords.longitude,
           };
           setUbicacionActual(coords);
+          ubicacionActualRef.current = coords;
 
           // Guardar ubicación en Firestore
           if (rutConductor) {
@@ -729,6 +940,7 @@ export default function PaginaPrincipalConductor() {
                 longitude: location.coords.longitude,
               };
               setUbicacionActual(coords);
+              ubicacionActualRef.current = coords;
 
               // Guardar ubicación en Firestore
               if (rutConductor) {
@@ -751,6 +963,7 @@ export default function PaginaPrincipalConductor() {
                   longitude: position.coords.longitude,
                 };
                 setUbicacionActual(coords);
+                ubicacionActualRef.current = coords;
                 if (rutConductor) {
                   guardarUbicacionEnFirestore(coords);
                 }
@@ -804,6 +1017,48 @@ export default function PaginaPrincipalConductor() {
       }
     };
   }, [rutConductor]);
+
+  // Recalcular distancias cuando cambie la ubicación del conductor
+  useEffect(() => {
+    if (!ubicacionActual || pasajeros.length === 0) return;
+
+    const recalcularDistancias = () => {
+      setPasajeros((pasajerosActuales) => {
+        const pasajerosActualizados = pasajerosActuales.map((pasajero) => {
+          if (pasajero.coordenadas) {
+            const distancia = calcularDistancia(
+              ubicacionActual.latitude,
+              ubicacionActual.longitude,
+              pasajero.coordenadas.latitude,
+              pasajero.coordenadas.longitude
+            );
+            return { ...pasajero, distancia };
+          }
+          return pasajero;
+        });
+
+        // Ordenar por distancia
+        pasajerosActualizados.sort((a, b) => {
+          if (a.distancia === undefined && b.distancia === undefined) return 0;
+          if (a.distancia === undefined) return 1;
+          if (b.distancia === undefined) return -1;
+          return a.distancia - b.distancia;
+        });
+
+        // Actualizar siguiente niño
+        const siguienteNinoNoEntregado = pasajerosActualizados.find(p => p.estadoViaje !== 'entregado');
+        if (siguienteNinoNoEntregado) {
+          setSiguienteNino(siguienteNinoNoEntregado);
+        } else {
+          setSiguienteNino(null);
+        }
+
+        return pasajerosActualizados;
+      });
+    };
+
+    recalcularDistancias();
+  }, [ubicacionActual]);
 
   // Listener para contar mensajes no leídos
   useEffect(() => {
@@ -897,25 +1152,343 @@ export default function PaginaPrincipalConductor() {
     };
   }, []);
 
-  const handleGenerarRuta = () => {
-    Alert.alert('Generar Ruta', 'Función de generar ruta en desarrollo');
-  };
+  const handleGenerarRuta = async () => {
+    console.log('🚀 Iniciando generación de ruta...');
+    console.log('📊 Pasajeros disponibles:', pasajeros.length);
+    
+    if (pasajeros.length === 0) {
+      Alert.alert('Sin pasajeros', 'No hay pasajeros asignados para generar una ruta.');
+      return;
+    }
 
-  const handleRutaSugerida = () => {
-    Alert.alert('Ruta Sugerida', 'Función de ruta sugerida en desarrollo');
-  };
+    setGenerandoRuta(true);
+    try {
+      const MAPBOX_TOKEN = 'pk.eyJ1IjoiYmFydG94IiwiYSI6ImNtaGpxaGZudzE4NHMycnB0bnMwdjVtbHIifQ.Makrf18R1Z9Wo4V-yMXUYw';
+      
+      // Obtener direcciones de todos los pasajeros
+      const waypoints: Array<{ coordinates: { latitude: number; longitude: number }; name: string; rutHijo: string }> = [];
+      
+      console.log('📍 Procesando waypoints para', pasajeros.length, 'pasajeros...');
+      for (const pasajero of pasajeros) {
+        console.log(`  - Procesando: ${pasajero.nombreHijo}`);
+        try {
+          // Buscar dirección del apoderado
+          const usuariosRef = collection(db, 'usuarios');
+          const apoderadoQuery = query(usuariosRef, where('rut', '==', pasajero.rutApoderado.trim()), limit(1));
+          const apoderadoSnap = await getDocs(apoderadoQuery);
+          
+          if (!apoderadoSnap.empty) {
+            const apoderadoData = apoderadoSnap.docs[0].data();
+            const direccion = apoderadoData.direccion || '';
+            
+            if (direccion) {
+              // Geocodificar dirección
+              const direccionConPais = `${direccion}, Chile`;
+              const encodedAddress = encodeURIComponent(direccionConPais);
+              
+              const geocodeResponse = await fetch(
+                `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedAddress}.json?access_token=${MAPBOX_TOKEN}&limit=1&country=cl&types=address`
+              );
+              const geocodeData = await geocodeResponse.json();
+              
+              if (geocodeData.features && geocodeData.features.length > 0) {
+                const [lng, lat] = geocodeData.features[0].center;
+                waypoints.push({
+                  coordinates: { latitude: lat, longitude: lng },
+                  name: `${pasajero.nombreHijo} - ${direccion}`,
+                  rutHijo: pasajero.rutHijo,
+                });
+              }
+            }
+          }
+        } catch (error) {
+          console.error(`Error al obtener dirección para ${pasajero.nombreHijo}:`, error);
+        }
+      }
 
-  const handlePickUp = () => {
-    if (siguienteNino) {
-      Alert.alert('Pick Up', `Recogiendo a ${siguienteNino.nombreHijo}`);
-      // Aquí puedes agregar la lógica para marcar como recogido
+      if (waypoints.length === 0) {
+        Alert.alert('Error', 'No se pudieron obtener direcciones válidas de los pasajeros.');
+        setGenerandoRuta(false);
+        return;
+      }
+
+      // Obtener ubicación actual del conductor (origen)
+      const origen = ubicacionActual || { latitude: -33.45, longitude: -70.6667 };
+      
+      // Construir URL para Mapbox Directions API con múltiples waypoints
+      // Formato: origin;waypoint1;waypoint2;...;destination
+      const coordinates = [
+        `${origen.longitude},${origen.latitude}`,
+        ...waypoints.map(w => `${w.coordinates.longitude},${w.coordinates.latitude}`),
+      ];
+      const coordinatesString = coordinates.join(';');
+      
+      // Llamar a Mapbox Directions API
+      const directionsResponse = await fetch(
+        `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinatesString}?geometries=geojson&steps=true&access_token=${MAPBOX_TOKEN}`
+      );
+      const directionsData = await directionsResponse.json();
+      
+      if (directionsData.code === 'Ok' && directionsData.routes && directionsData.routes.length > 0) {
+        const route = directionsData.routes[0];
+        const routeGeometry = {
+          type: 'Feature',
+          geometry: route.geometry,
+        };
+        
+        setRutaGenerada({
+          waypoints,
+          routeGeometry,
+        });
+        
+        Alert.alert('Ruta generada', `Se generó una ruta con ${waypoints.length} destino(s).`);
+      } else {
+        Alert.alert('Error', 'No se pudo generar la ruta. Verifica las direcciones.');
+      }
+    } catch (error) {
+      console.error('Error al generar ruta:', error);
+      Alert.alert('Error', 'Ocurrió un error al generar la ruta.');
+    } finally {
+      setGenerandoRuta(false);
     }
   };
 
-  const handleDropOff = () => {
-    if (siguienteNino) {
-      Alert.alert('Drop Off', `Dejando a ${siguienteNino.nombreHijo}`);
-      // Aquí puedes agregar la lógica para marcar como dejado
+  const handleRutaSugerida = () => {
+    // Verificar si hay niños con estado "recogido" (aún no entregados)
+    const ninosAbordo = pasajeros.filter(p => p.estadoViaje === 'recogido');
+    // Verificar si hay niños sin recoger (sin estado o estado vacío)
+    const ninosPorRecoger = pasajeros.filter(p => !p.estadoViaje || p.estadoViaje === '');
+    
+    if (ninosAbordo.length > 0 || ninosPorRecoger.length > 0) {
+      // Si hay niños abordo o por recoger, mostrar modal de advertencia
+      setModalTerminarRutaVisible(true);
+    } else {
+      // Si no hay niños abordo ni por recoger, simplemente terminar la ruta
+      setRutaGenerada(null);
+      Alert.alert('Ruta terminada', 'La ruta ha sido cancelada.');
+    }
+  };
+
+  const confirmarTerminarRuta = () => {
+    setRutaGenerada(null);
+    setModalTerminarRutaVisible(false);
+    // Obtener todos los niños que no han sido entregados
+    const ninosNoEntregados = pasajeros.filter(p => {
+      const estado = (p.estadoViaje || '').toString().trim().toLowerCase();
+      return estado !== 'entregado';
+    });
+    // Enviar alertas a los padres
+    terminarRutaConAlerta(ninosNoEntregados);
+  };
+
+  const terminarRutaConAlerta = async (ninosAbordo: Pasajero[]) => {
+    try {
+      // Terminar la ruta
+      setRutaGenerada(null);
+
+      // Crear alertas para cada padre cuyo hijo esté a bordo
+      for (const pasajero of ninosAbordo) {
+        try {
+          // Obtener datos del pasajero desde Firestore para asegurar que tenemos toda la información
+          const listaPasajerosRef = collection(db, 'lista_pasajeros');
+          const pasajeroQuery = query(
+            listaPasajerosRef,
+            where('rutHijo', '==', pasajero.rutHijo),
+            where('rutConductor', '==', rutConductor),
+            limit(1)
+          );
+          const pasajeroSnap = await getDocs(pasajeroQuery);
+
+          if (!pasajeroSnap.empty) {
+            const pasajeroData = pasajeroSnap.docs[0].data();
+            const rutApoderado = (pasajeroData.rutApoderado || '').toString().trim();
+
+            if (rutApoderado) {
+              // Obtener fecha y hora actual
+              const ahora = new Date();
+              const fechaHora = ahora.toLocaleString('es-CL', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+
+              // Crear alerta para el apoderado
+              await addDoc(collection(db, 'Alertas'), {
+                tipo: 'Problema Conexión',
+                tipoAlerta: 'Problema Conexión',
+                descripcion: `${pasajero.nombreHijo} aún está con el conductor del furgón. Hubo un problema con la conexión y la ruta fue terminada. Por favor, contacte al conductor.`,
+                rutDestinatario: rutApoderado,
+                rutHijo: pasajero.rutHijo,
+                nombreHijo: pasajero.nombreHijo,
+                patenteFurgon: pasajeroData.patenteFurgon || '',
+                fechaHoraProblema: fechaHora,
+                creadoEn: serverTimestamp(),
+                leida: false,
+              });
+
+              console.log(`✅ Alerta de problema de conexión creada para ${pasajero.nombreHijo}`);
+            }
+          }
+        } catch (error) {
+          console.error(`Error al crear alerta para ${pasajero.nombreHijo}:`, error);
+        }
+      }
+
+      Alert.alert(
+        'Ruta terminada',
+        `La ruta ha sido terminada. Se han enviado alertas a los padres de ${ninosAbordo.length} ${ninosAbordo.length === 1 ? 'niño' : 'niños'} que aún estaban a bordo.`
+      );
+    } catch (error) {
+      console.error('Error al terminar ruta:', error);
+      Alert.alert('Error', 'Ocurrió un error al terminar la ruta.');
+    }
+  };
+
+  const handlePickUp = async () => {
+    if (!siguienteNino) return;
+    
+    try {
+      // Buscar el registro en lista_pasajeros
+      const listaPasajerosRef = collection(db, 'lista_pasajeros');
+      const pasajeroQuery = query(
+        listaPasajerosRef,
+        where('rutHijo', '==', siguienteNino.rutHijo),
+        where('rutConductor', '==', rutConductor),
+        limit(1)
+      );
+      const pasajeroSnap = await getDocs(pasajeroQuery);
+      
+      if (!pasajeroSnap.empty) {
+        const pasajeroDoc = pasajeroSnap.docs[0];
+        const pasajeroData = pasajeroDoc.data();
+        
+        // Obtener fecha y hora actual
+        const ahora = new Date();
+        const fechaHora = ahora.toLocaleString('es-CL', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        
+        // Actualizar estado en lista_pasajeros
+        await setDoc(
+          doc(db, 'lista_pasajeros', pasajeroDoc.id),
+          {
+            estadoViaje: 'recogido',
+            fechaRecogido: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        
+        // Crear alerta para el apoderado con nombre del hijo y fecha/hora
+        const rutApoderado = (pasajeroData.rutApoderado || '').toString().trim();
+        if (rutApoderado) {
+          console.log('📤 Creando alerta de Recogido:', {
+            rutApoderado,
+            nombreHijo: siguienteNino.nombreHijo,
+            patenteFurgon: pasajeroData.patenteFurgon,
+          });
+          await addDoc(collection(db, 'Alertas'), {
+            tipo: 'Recogido',
+            tipoAlerta: 'Recogido',
+            descripcion: `${siguienteNino.nombreHijo} ha sido recogido el ${fechaHora}`,
+            rutDestinatario: rutApoderado,
+            rutHijo: siguienteNino.rutHijo,
+            nombreHijo: siguienteNino.nombreHijo,
+            patenteFurgon: pasajeroData.patenteFurgon || '',
+            fechaHoraRecogido: fechaHora,
+            creadoEn: serverTimestamp(),
+            leida: false,
+          });
+          console.log('✅ Alerta de Recogido creada exitosamente');
+        } else {
+          console.error('❌ No se pudo crear alerta: rutApoderado vacío');
+        }
+        
+        Alert.alert('Recogido', `${siguienteNino.nombreHijo} ha sido marcado como recogido.`);
+      } else {
+        Alert.alert('Error', 'No se encontró el registro del pasajero.');
+      }
+    } catch (error) {
+      console.error('Error al marcar como recogido:', error);
+      Alert.alert('Error', 'No se pudo actualizar el estado.');
+    }
+  };
+
+  const handleDropOff = async () => {
+    if (!siguienteNino) return;
+    
+    try {
+      // Buscar el registro en lista_pasajeros
+      const listaPasajerosRef = collection(db, 'lista_pasajeros');
+      const pasajeroQuery = query(
+        listaPasajerosRef,
+        where('rutHijo', '==', siguienteNino.rutHijo),
+        where('rutConductor', '==', rutConductor),
+        limit(1)
+      );
+      const pasajeroSnap = await getDocs(pasajeroQuery);
+      
+      if (!pasajeroSnap.empty) {
+        const pasajeroDoc = pasajeroSnap.docs[0];
+        const pasajeroData = pasajeroDoc.data();
+        
+        // Obtener fecha y hora actual
+        const ahora = new Date();
+        const fechaHora = ahora.toLocaleString('es-CL', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        
+        // Actualizar estado en lista_pasajeros
+        await setDoc(
+          doc(db, 'lista_pasajeros', pasajeroDoc.id),
+          {
+            estadoViaje: 'entregado',
+            fechaEntregado: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        
+        // Crear alerta para el apoderado con nombre del hijo, fecha y hora
+        const rutApoderado = (pasajeroData.rutApoderado || '').toString().trim();
+        if (rutApoderado) {
+          console.log('📤 Creando alerta de Entregado:', {
+            rutApoderado,
+            nombreHijo: siguienteNino.nombreHijo,
+            patenteFurgon: pasajeroData.patenteFurgon,
+          });
+          await addDoc(collection(db, 'Alertas'), {
+            tipo: 'Entregado',
+            tipoAlerta: 'Entregado',
+            descripcion: `${siguienteNino.nombreHijo} ha sido entregado el ${fechaHora}`,
+            rutDestinatario: rutApoderado,
+            rutHijo: siguienteNino.rutHijo,
+            nombreHijo: siguienteNino.nombreHijo,
+            patenteFurgon: pasajeroData.patenteFurgon || '',
+            fechaHoraEntrega: fechaHora,
+            creadoEn: serverTimestamp(),
+            leida: false,
+          });
+          console.log('✅ Alerta de Entregado creada exitosamente');
+        } else {
+          console.error('❌ No se pudo crear alerta: rutApoderado vacío');
+        }
+        
+        Alert.alert('Entregado', `${siguienteNino.nombreHijo} ha sido marcado como entregado.`);
+      } else {
+        Alert.alert('Error', 'No se encontró el registro del pasajero.');
+      }
+    } catch (error) {
+      console.error('Error al marcar como entregado:', error);
+      Alert.alert('Error', 'No se pudo actualizar el estado.');
     }
   };
 
@@ -1342,11 +1915,66 @@ export default function PaginaPrincipalConductor() {
         </Pressable>
       </Modal>
 
+      {/* Modal para confirmar terminar ruta */}
+      <Modal
+        visible={modalTerminarRutaVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setModalTerminarRutaVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setModalTerminarRutaVisible(false)}
+        >
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>⚠️ Advertencia</Text>
+              <Pressable onPress={() => setModalTerminarRutaVisible(false)}>
+                <Ionicons name="close" size={24} color="#666" />
+              </Pressable>
+            </View>
+            <View style={styles.modalBody}>
+              <Text style={styles.modalDescription}>
+                {(() => {
+                  const ninosAbordo = pasajeros.filter(p => p.estadoViaje === 'recogido');
+                  const ninosPorRecoger = pasajeros.filter(p => !p.estadoViaje || p.estadoViaje === '');
+                  const mensajes = [];
+                  
+                  if (ninosAbordo.length > 0) {
+                    mensajes.push(`${ninosAbordo.length} ${ninosAbordo.length === 1 ? 'niño a bordo' : 'niños a bordo'}`);
+                  }
+                  if (ninosPorRecoger.length > 0) {
+                    mensajes.push(`${ninosPorRecoger.length} ${ninosPorRecoger.length === 1 ? 'niño por recoger' : 'niños por recoger'}`);
+                  }
+                  
+                  return `Aún quedan ${mensajes.join(' y ')} que no han sido entregados. ¿Está seguro de que desea terminar el recorrido?`;
+                })()}
+              </Text>
+            </View>
+            <View style={styles.modalButtons}>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonCancelar]}
+                onPress={() => setModalTerminarRutaVisible(false)}
+              >
+                <Text style={styles.modalButtonTextCancelar}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonTerminar]}
+                onPress={confirmarTerminarRuta}
+              >
+                <Text style={styles.modalButtonTextTerminar}>Terminar Ruta</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* Mapa del conductor */}
       <View style={styles.mapaContainer}>
         <MapboxDriver
           accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
           driverLocation={ubicacionActual || undefined}
+          route={rutaGenerada || undefined}
         />
       </View>
 
@@ -1358,15 +1986,22 @@ export default function PaginaPrincipalConductor() {
             style={styles.routeButton}
             underlayColor="#0c5c4e"
             onPress={handleGenerarRuta}
+            disabled={generandoRuta}
           >
-            <Text style={styles.routeButtonText}>Generar Ruta</Text>
+            <Text style={styles.routeButtonText}>
+              {generandoRuta ? 'Generando...' : 'Generar Ruta'}
+            </Text>
           </TouchableHighlight>
           <TouchableHighlight
-            style={styles.routeButton}
-            underlayColor="#0c5c4e"
+            style={[
+              styles.terminarRutaButton,
+              !rutaGenerada && styles.terminarRutaButtonDisabled,
+            ]}
+            underlayColor="#d97706"
             onPress={handleRutaSugerida}
+            disabled={!rutaGenerada}
           >
-            <Text style={styles.routeButtonText}>Ruta Sugerida</Text>
+            <Text style={styles.terminarRutaButtonText}>Terminar Ruta</Text>
           </TouchableHighlight>
         </View>
 
@@ -1389,7 +2024,7 @@ export default function PaginaPrincipalConductor() {
                 onPress={handlePickUp}
                 disabled={!siguienteNino}
               >
-                <Text style={styles.actionButtonText}>Pick Up</Text>
+                <Text style={styles.actionButtonText}>Recoger</Text>
               </TouchableHighlight>
               <TouchableHighlight
                 style={styles.actionButton}
@@ -1397,7 +2032,7 @@ export default function PaginaPrincipalConductor() {
                 onPress={handleDropOff}
                 disabled={!siguienteNino}
               >
-                <Text style={styles.actionButtonText}>Drop Off</Text>
+                <Text style={styles.actionButtonText}>Entregar</Text>
               </TouchableHighlight>
             </View>
           </View>
@@ -1644,6 +2279,23 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  terminarRutaButton: {
+    flex: 1,
+    backgroundColor: '#f97316',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    alignItems: 'center',
+    opacity: 1,
+  },
+  terminarRutaButtonDisabled: {
+    opacity: 0.5,
+  },
+  terminarRutaButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
   nextChildSection: {
     marginTop: 10,
   },
@@ -1778,6 +2430,22 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   modalButtonTextRechazar: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  modalButtonCancelar: {
+    backgroundColor: '#6c757d',
+  },
+  modalButtonTerminar: {
+    backgroundColor: '#f97316',
+  },
+  modalButtonTextCancelar: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  modalButtonTextTerminar: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
