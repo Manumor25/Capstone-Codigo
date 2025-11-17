@@ -23,6 +23,7 @@ import { Image } from 'expo-image';
 import Checkbox from 'expo-checkbox';
 // Import using a relative path so Metro resolver finds the file immediately
 import MapboxDriver from '../../../components/MapboxDriver';
+import NotificacionesGlobales from '../../../components/NotificacionesGlobales';
 
 interface Hijo {
   id: string;
@@ -1291,26 +1292,73 @@ export default function PaginaPrincipal() {
 
   return (
     <View style={styles.container}>
-      {/* Notificaciones Pop-up */}
+      {/* Notificaciones Pop-up Globales */}
+      <NotificacionesGlobales
+        rutUsuario={rutUsuario}
+        patentesAsignadas={patentesAsignadas}
+        tieneInscripcion={tieneInscripcion}
+      />
+      
+      {/* Notificaciones Pop-up (mantener para compatibilidad) */}
       <View style={styles.notificacionesContainer} pointerEvents="box-none">
         {notificacionesPopUp.map((notificacion, index) => {
-          const esUrgente = notificacion.alerta.tipo.toLowerCase() === 'urgencia';
+          const tipoAlerta = notificacion.alerta.tipo.toLowerCase();
+          const esUrgente = tipoAlerta === 'urgencia';
+          const esRecogido = tipoAlerta === 'recogido';
+          const esEntregado = tipoAlerta === 'entregado';
+          
+          // Determinar color y estilo según el tipo de alerta
+          let backgroundColor = '#fff';
+          let borderColor = '#127067';
+          let iconColor = '#127067';
+          let textColor = '#333';
+          let tipoTextColor = '#127067';
+          let iconName = 'information-circle';
+          
+          if (esUrgente) {
+            backgroundColor = '#d32f2f';
+            borderColor = '#a94442';
+            iconColor = '#fff';
+            textColor = '#fff';
+            tipoTextColor = '#fff';
+            iconName = 'alert-circle';
+          } else if (esRecogido) {
+            backgroundColor = '#e8f5e9';
+            borderColor = '#4caf50';
+            iconColor = '#4caf50';
+            textColor = '#2e7d32';
+            tipoTextColor = '#4caf50';
+            iconName = 'checkmark-circle';
+          } else if (esEntregado) {
+            backgroundColor = '#e3f2fd';
+            borderColor = '#2196f3';
+            iconColor = '#2196f3';
+            textColor = '#1565c0';
+            tipoTextColor = '#2196f3';
+            iconName = 'home';
+          }
+          
           const translateY = notificacion.animacion.interpolate({
             inputRange: [0, 1],
             outputRange: [-100, 0],
           });
           const opacity = notificacion.animacion;
+          const scale = notificacion.animacion.interpolate({
+            inputRange: [0, 1],
+            outputRange: [0.8, 1],
+          });
 
           return (
             <Animated.View
               key={notificacion.id}
               style={[
                 styles.notificacionPopUp,
-                esUrgente && styles.notificacionUrgente,
                 {
-                  transform: [{ translateY }],
+                  backgroundColor,
+                  borderLeftColor: borderColor,
+                  transform: [{ translateY }, { scale }],
                   opacity,
-                  top: 100 + index * 90, // Apilar notificaciones
+                  top: 100 + index * 100, // Apilar notificaciones con más espacio
                   zIndex: 1000 - index,
                 },
               ]}
@@ -1322,11 +1370,11 @@ export default function PaginaPrincipal() {
                 <View style={styles.notificacionHeader}>
                   <View style={styles.notificacionIconContainer}>
                     <Ionicons
-                      name={esUrgente ? 'alert-circle' : 'information-circle'}
-                      size={24}
-                      color={esUrgente ? '#fff' : '#127067'}
+                      name={iconName as any}
+                      size={28}
+                      color={iconColor}
                     />
-                    <Text style={[styles.notificacionTipo, esUrgente && styles.notificacionTipoUrgente]}>
+                    <Text style={[styles.notificacionTipo, { color: tipoTextColor }]}>
                       {notificacion.alerta.tipo}
                     </Text>
                   </View>
@@ -1336,14 +1384,22 @@ export default function PaginaPrincipal() {
                   >
                     <Ionicons
                       name="close"
-                      size={20}
-                      color={esUrgente ? '#fff' : '#666'}
+                      size={22}
+                      color={textColor}
                     />
                   </Pressable>
                 </View>
+                {notificacion.alerta.nombreHijo && (
+                  <Text
+                    style={[styles.notificacionNombreHijo, { color: textColor }]}
+                    numberOfLines={1}
+                  >
+                    {notificacion.alerta.nombreHijo}
+                  </Text>
+                )}
                 <Text
-                  style={[styles.notificacionTexto, esUrgente && styles.notificacionTextoUrgente]}
-                  numberOfLines={2}
+                  style={[styles.notificacionTexto, { color: textColor }]}
+                  numberOfLines={3}
                 >
                   {notificacion.alerta.descripcion}
                 </Text>
@@ -1441,15 +1497,6 @@ export default function PaginaPrincipal() {
                           <Text style={styles.alertaDescripcion}>{alerta.descripcion}</Text>
                         </View>
                       </Pressable>
-                      {esRecogidoOEntregado && !alerta.leida && (
-                        <TouchableHighlight
-                          style={styles.okButton}
-                          underlayColor="#0c5c4e"
-                          onPress={() => handleMarcarAlertaLeida(alerta)}
-                        >
-                          <Text style={styles.okButtonText}>OK</Text>
-                        </TouchableHighlight>
-                      )}
                     </View>
                   );
                 })}
@@ -1933,20 +1980,6 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 10,
   },
-  okButton: {
-    backgroundColor: '#127067',
-    paddingVertical: 6,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    minWidth: 50,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  okButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
   alertasScroll: {
     maxHeight: 240,
   },
@@ -2108,8 +2141,9 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
-    borderLeftWidth: 4,
+    borderLeftWidth: 5,
     borderLeftColor: '#127067',
+    minHeight: 80,
   },
   notificacionUrgente: {
     backgroundColor: '#d32f2f',
@@ -2130,17 +2164,25 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   notificacionTipo: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: 'bold',
     color: '#127067',
+    marginLeft: 8,
   },
   notificacionTipoUrgente: {
     color: '#fff',
+  },
+  notificacionNombreHijo: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginTop: 4,
+    marginBottom: 6,
   },
   notificacionTexto: {
     fontSize: 14,
     color: '#333',
     lineHeight: 20,
+    marginTop: 4,
   },
   notificacionTextoUrgente: {
     color: '#fff',

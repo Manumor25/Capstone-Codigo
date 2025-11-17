@@ -18,6 +18,7 @@ import { db } from '@/firebaseConfig';
 import { collection, getDocs, query, where, doc, deleteDoc } from 'firebase/firestore';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
+import NotificacionesGlobales from '../../../components/NotificacionesGlobales';
 
 interface Hijo {
   id: string;
@@ -35,6 +36,8 @@ export default function ListaHijosScreen() {
   const [hijos, setHijos] = useState<Hijo[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [borrandoId, setBorrandoId] = useState<string | null>(null);
+  const [patentesAsignadas, setPatentesAsignadas] = useState<string[]>([]);
+  const [tieneInscripcion, setTieneInscripcion] = useState<boolean>(false);
   
   // Estados para modales personalizados
   const [modalVisible, setModalVisible] = useState(false);
@@ -119,6 +122,27 @@ export default function ListaHijosScreen() {
         });
         
         setHijos(listaHijos);
+        
+        // Cargar patentes asignadas para las notificaciones
+        try {
+          const listaPasajerosRef = collection(db, 'lista_pasajeros');
+          const pasajerosQuery = query(listaPasajerosRef, where('rutApoderado', '==', rutUsuarioTrim));
+          const pasajerosSnapshot = await getDocs(pasajerosQuery);
+          
+          const patentesSet = new Set<string>();
+          pasajerosSnapshot.docs.forEach((docSnap) => {
+            const data = docSnap.data();
+            const patente = (data.patenteFurgon || '').toString().trim().toUpperCase();
+            if (patente) {
+              patentesSet.add(patente);
+            }
+          });
+          
+          setPatentesAsignadas(Array.from(patentesSet));
+          setTieneInscripcion(patentesSet.size > 0);
+        } catch (error) {
+          console.error('Error al cargar patentes:', error);
+        }
       }
     } catch (error) {
       console.error('Error al cargar hijos:', error);
@@ -452,6 +476,13 @@ export default function ListaHijosScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Notificaciones Pop-up Globales */}
+      <NotificacionesGlobales
+        rutUsuario={rutUsuario}
+        patentesAsignadas={patentesAsignadas}
+        tieneInscripcion={tieneInscripcion}
+      />
+      
       {/* Botón de volver */}
       <Pressable style={styles.backButton} onPress={handleVolver}>
         <Ionicons name="arrow-back" size={28} color="#127067" />

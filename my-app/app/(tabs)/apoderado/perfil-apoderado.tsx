@@ -7,12 +7,16 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, TouchableHighlight, View, ScrollView } from 'react-native';
 import { db } from '@/firebaseConfig';
 import { collection, deleteDoc, doc, getDocs, query, where } from 'firebase/firestore';
+import NotificacionesGlobales from '../../../components/NotificacionesGlobales';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const [userName, setUserName] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
   const [borrandoCuenta, setBorrandoCuenta] = useState(false);
+  const [rutUsuario, setRutUsuario] = useState<string>('');
+  const [patentesAsignadas, setPatentesAsignadas] = useState<string[]>([]);
+  const [tieneInscripcion, setTieneInscripcion] = useState<boolean>(false);
   useSyncRutActivo();
 
   const handleLogout = async () => {
@@ -102,6 +106,33 @@ export default function ProfileScreen() {
         const name = await AsyncStorage.getItem('userName');
         if (name && name.trim() !== '') setUserName(name);
         else setUserName('Usuario');
+        
+        // Cargar RUT y patentes para las notificaciones
+        const rut = await AsyncStorage.getItem('rutUsuario');
+        if (rut) {
+          setRutUsuario(rut);
+          
+          // Obtener patentes asignadas
+          try {
+            const listaPasajerosRef = collection(db, 'lista_pasajeros');
+            const pasajerosQuery = query(listaPasajerosRef, where('rutApoderado', '==', rut.trim()));
+            const pasajerosSnapshot = await getDocs(pasajerosQuery);
+            
+            const patentesSet = new Set<string>();
+            pasajerosSnapshot.docs.forEach((docSnap) => {
+              const data = docSnap.data();
+              const patente = (data.patenteFurgon || '').toString().trim().toUpperCase();
+              if (patente) {
+                patentesSet.add(patente);
+              }
+            });
+            
+            setPatentesAsignadas(Array.from(patentesSet));
+            setTieneInscripcion(patentesSet.size > 0);
+          } catch (error) {
+            console.error('Error al cargar patentes:', error);
+          }
+        }
       } catch (error) {
         setUserName('Usuario');
       }
@@ -111,6 +142,13 @@ export default function ProfileScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Notificaciones Pop-up Globales */}
+      <NotificacionesGlobales
+        rutUsuario={rutUsuario}
+        patentesAsignadas={patentesAsignadas}
+        tieneInscripcion={tieneInscripcion}
+      />
+      
       {/* Botón de volver */}
       <Pressable
         style={styles.backButton}
