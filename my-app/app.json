@@ -7,7 +7,7 @@
     "icon": "./assets/images/Furgo_Truck.png",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    // "newArchEnabled": true,  // <-- 1. BORRADO DE AQUÍ (lugar incorrecto)
     "ios": {
       "supportsTablet": true
     },
@@ -20,7 +20,9 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.man.moralesm.myapp"
+      // 2. Deja el 'package' que quieras usar (este debe coincidir con el de abajo)
+      "package": "com.joesalgado.myapp"
+      // "compileSdkVersion": 35 // <-- 3. BORRADO DE AQUÍ (se define en el plugin)
     },
     "web": {
       "output": "static",
@@ -42,11 +44,14 @@
       ],
       [
         "expo-build-properties",
+        // 4. AQUÍ ES DONDE DEBEN IR TODAS LAS CONFIGURACIONES
         {
           "android": {
-            "compileSdkVersion": 34,
+            "package": "com.joesalgado.myapp",
+            "compileSdkVersion": 35,    // Arreglo error compileSdk
             "targetSdkVersion": 34,
-            "minSdkVersion": 23
+            "minSdkVersion": 24,        // Arreglo error minSdk
+            "newArchEnabled": true      // Arreglo error Reanimated/Worklets
           }
         }
       ]
@@ -58,7 +63,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "b5505b46-2957-4faa-8ec6-4d3bfdfafdf6"
+        "projectId": "aa6b0f15-2989-4ccf-93ef-6e1b652ec3ca"
       }
     }
   }

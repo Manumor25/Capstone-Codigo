@@ -53,6 +53,8 @@ export default function PaginaPrincipalConductor() {
   const [rutaGenerada, setRutaGenerada] = useState<{
     waypoints: Array<{ coordinates: { latitude: number; longitude: number }; name: string; rutHijo?: string }>;
     routeGeometry?: any;
+    distancia?: string;
+    tiempoEstimado?: number;
   } | null>(null);
   const [generandoRuta, setGenerandoRuta] = useState(false);
   useSyncRutActivo();
@@ -1173,9 +1175,14 @@ export default function PaginaPrincipalConductor() {
           };
           
           // Actualizar la ruta sin mostrar alerta (actualización silenciosa)
+          const distanciaTotal = route.distance ? (route.distance / 1000).toFixed(1) : rutaGenerada.distancia;
+          const tiempoEstimado = route.duration ? Math.round(route.duration / 60) : rutaGenerada.tiempoEstimado;
+          
           setRutaGenerada({
             waypoints: rutaGenerada.waypoints,
             routeGeometry,
+            distancia: distanciaTotal,
+            tiempoEstimado: typeof tiempoEstimado === 'number' ? tiempoEstimado : rutaGenerada.tiempoEstimado,
           });
           
           console.log('🔄 Ruta actualizada en tiempo real');
@@ -1509,7 +1516,116 @@ export default function PaginaPrincipalConductor() {
         setRutaGenerada({
           waypoints,
           routeGeometry,
+          distancia: distanciaTotal,
+          tiempoEstimado: typeof tiempoEstimado === 'number' ? tiempoEstimado : undefined,
         });
+        
+        // Guardar la ruta en la base de datos para que los apoderados puedan verla
+        try {
+          const rutGuardado = await AsyncStorage.getItem('rutUsuario');
+          if (rutGuardado) {
+            // Guardar la ruta en una colección de rutas activas
+            const rutasActivasRef = collection(db, 'rutas_activas');
+            const rutaDocRef = doc(rutasActivasRef, rutGuardado);
+            
+            await setDoc(rutaDocRef, {
+              rutConductor: rutGuardado,
+              waypoints: waypoints.map(w => ({
+                coordinates: w.coordinates,
+                name: w.name,
+                rutHijo: w.rutHijo,
+              })),
+              routeGeometry: routeGeometry,
+              distancia: distanciaTotal,
+              tiempoEstimado: typeof tiempoEstimado === 'number' ? tiempoEstimado : undefined,
+              fechaGeneracion: serverTimestamp(),
+              activa: true,
+            }, { merge: true });
+            
+            console.log('✅ Ruta guardada en base de datos:', {
+              rutConductor: rutGuardado,
+              waypointsCount: waypoints.length,
+              distancia: distanciaTotal,
+              tiempoEstimado: typeof tiempoEstimado === 'number' ? tiempoEstimado : undefined,
+            });
+            
+            // Enviar notificaciones a todos los apoderados de los niños en la ruta
+            const rutApoderados = new Set<string>();
+            const nombresHijos = new Map<string, string>(); // rutApoderado -> nombreHijo
+            
+            for (const waypoint of waypoints) {
+              if (waypoint.rutHijo) {
+                // Buscar el apoderado de este hijo
+                const listaPasajerosRef = collection(db, 'lista_pasajeros');
+                const pasajeroQuery = query(
+                  listaPasajerosRef,
+                  where('rutHijo', '==', waypoint.rutHijo),
+                  where('rutConductor', '==', rutGuardado),
+                  limit(1)
+                );
+                const pasajeroSnap = await getDocs(pasajeroQuery);
+                
+                if (!pasajeroSnap.empty) {
+                  const pasajeroData = pasajeroSnap.docs[0].data();
+                  const rutApoderado = (pasajeroData.rutApoderado || '').toString().trim();
+                  const nombreHijo = pasajeroData.nombreHijo || waypoint.name.split(' - ')[0];
+                  
+                  if (rutApoderado) {
+                    rutApoderados.add(rutApoderado);
+                    nombresHijos.set(rutApoderado, nombreHijo);
+                  }
+                }
+              }
+            }
+            
+            // Crear notificaciones para cada apoderado
+            const alertasRef = collection(db, 'Alertas');
+            const listaPasajerosRef = collection(db, 'lista_pasajeros');
+            
+            for (const rutApoderado of rutApoderados) {
+              const nombreHijo = nombresHijos.get(rutApoderado) || 'tu hijo';
+              
+              // Buscar el rutHijo correspondiente a este apoderado
+              let rutHijoParaAlerta = '';
+              for (const waypoint of waypoints) {
+                if (waypoint.rutHijo) {
+                  const pasajeroQuery = query(
+                    listaPasajerosRef,
+                    where('rutHijo', '==', waypoint.rutHijo),
+                    where('rutApoderado', '==', rutApoderado),
+                    where('rutConductor', '==', rutGuardado),
+                    limit(1)
+                  );
+                  const pasajeroSnap = await getDocs(pasajeroQuery);
+                  if (!pasajeroSnap.empty) {
+                    rutHijoParaAlerta = waypoint.rutHijo;
+                    break;
+                  }
+                }
+              }
+              
+              await addDoc(alertasRef, {
+                tipo: 'Ruta Generada',
+                tipoAlerta: 'Ruta Generada',
+                descripcion: `El conductor va en camino por ${nombreHijo}. Puedes ver la ruta en el mapa.`,
+                rutDestinatario: rutApoderado,
+                rutHijo: rutHijoParaAlerta,
+                nombreHijo: nombreHijo,
+                patenteFurgon: pasajerosActuales[0]?.patenteFurgon || '',
+                creadoEn: serverTimestamp(),
+                leida: false,
+                rutaDestino: '/(tabs)/apoderado/pagina-principal-apoderado',
+              });
+              
+              console.log(`✅ Notificación "Ruta Generada" enviada a ${rutApoderado} para ${nombreHijo}`);
+            }
+            
+            console.log(`✅ Notificaciones enviadas a ${rutApoderados.size} apoderado(s)`);
+          }
+        } catch (error) {
+          console.error('Error al guardar ruta o enviar notificaciones:', error);
+          // No mostrar error al usuario, solo loguear
+        }
         
         Alert.alert(
           'Ruta generada', 
@@ -1555,11 +1671,13 @@ export default function PaginaPrincipalConductor() {
   };
   
   // Función para terminar la ruta completamente y resetear estados
-  const terminarRutaCompleta = async () => {
+  const terminarRutaCompleta = async (historialYaGuardado: boolean = false) => {
     console.log('🛑 Terminando ruta completamente...');
     
-    // Guardar historial de viaje ANTES de resetear estados
-    await guardarHistorialViaje();
+    // Guardar historial de viaje ANTES de resetear estados (solo si no se guardó antes)
+    if (!historialYaGuardado) {
+      await guardarHistorialViaje();
+    }
     
     // Primero resetear los estados de la ruta
     setRutaGenerada(null);
@@ -1576,10 +1694,12 @@ export default function PaginaPrincipalConductor() {
       console.log('✅ Verificación final: Estados de ruta confirmados como reseteados');
     }, 100);
     
-    Alert.alert(
-      'Ruta terminada', 
-      'La ruta ha sido terminada. Todos los estados han sido reseteados. Puedes generar una nueva ruta cuando estés listo.'
-    );
+    if (!historialYaGuardado) {
+      Alert.alert(
+        'Ruta terminada', 
+        'La ruta ha sido terminada. Todos los estados han sido reseteados. Puedes generar una nueva ruta cuando estés listo.'
+      );
+    }
   };
 
   // Función para guardar historial de viaje
@@ -1646,11 +1766,12 @@ export default function PaginaPrincipalConductor() {
         const estabaEnRuta = incluirTodos || rutHijosEnRuta.has(rutHijo);
         
         if (estabaEnRuta) {
-          // Formatear horas de recogida y entrega
-          let horaRecogidoFormateada = null;
-          let horaEntregadoFormateada = null;
+          // Usar las horas formateadas guardadas, o formatear si no existen
+          let horaRecogidoFormateada = data.horaRecogidoFormateada || null;
+          let horaEntregadoFormateada = data.horaEntregadoFormateada || null;
           
-          if (data.fechaRecogido) {
+          // Si no hay hora formateada guardada, formatear desde el timestamp
+          if (!horaRecogidoFormateada && data.fechaRecogido) {
             try {
               const fechaRecogido = data.fechaRecogido.toDate ? data.fechaRecogido.toDate() : new Date(data.fechaRecogido);
               horaRecogidoFormateada = fechaRecogido.toLocaleString('es-CL', {
@@ -1666,7 +1787,7 @@ export default function PaginaPrincipalConductor() {
             }
           }
           
-          if (data.fechaEntregado) {
+          if (!horaEntregadoFormateada && data.fechaEntregado) {
             try {
               const fechaEntregado = data.fechaEntregado.toDate ? data.fechaEntregado.toDate() : new Date(data.fechaEntregado);
               horaEntregadoFormateada = fechaEntregado.toLocaleString('es-CL', {
@@ -1906,6 +2027,19 @@ export default function PaginaPrincipalConductor() {
       // Guardar historial de viaje ANTES de resetear estados
       await guardarHistorialViaje();
 
+      // Eliminar la ruta activa de la base de datos
+      try {
+        const rutGuardado = await AsyncStorage.getItem('rutUsuario');
+        if (rutGuardado) {
+          const rutasActivasRef = collection(db, 'rutas_activas');
+          const rutaDocRef = doc(rutasActivasRef, rutGuardado);
+          await setDoc(rutaDocRef, { activa: false }, { merge: true });
+          console.log('✅ Ruta activa marcada como inactiva en base de datos');
+        }
+      } catch (error) {
+        console.error('Error al eliminar ruta activa:', error);
+      }
+
       // Terminar la ruta
       setRutaGenerada(null);
 
@@ -2013,12 +2147,23 @@ export default function PaginaPrincipalConductor() {
           minute: '2-digit',
         });
         
-        // Actualizar estado en lista_pasajeros
+        // Formatear hora completa para guardar en historial
+        const horaRecogidoFormateada = ahora.toLocaleString('es-CL', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+        
+        // Actualizar estado en lista_pasajeros con hora formateada
         await setDoc(
           doc(db, 'lista_pasajeros', pasajeroDoc.id),
           {
             estadoViaje: 'recogido',
             fechaRecogido: serverTimestamp(),
+            horaRecogidoFormateada: horaRecogidoFormateada,
           },
           { merge: true }
         );
@@ -2031,7 +2176,7 @@ export default function PaginaPrincipalConductor() {
             nombreHijo: siguienteNino.nombreHijo,
             patenteFurgon: pasajeroData.patenteFurgon,
           });
-          // Crear alerta para el apoderado
+          // Crear alerta SOLO para el apoderado (el conductor no necesita notificación de su propia acción)
           await addDoc(collection(db, 'Alertas'), {
             tipo: 'Recogido',
             tipoAlerta: 'Recogido',
@@ -2045,23 +2190,6 @@ export default function PaginaPrincipalConductor() {
             leida: false,
           });
           console.log('✅ Alerta de Recogido creada para apoderado');
-          
-          // Crear alerta también para el conductor
-          if (rutConductor) {
-            await addDoc(collection(db, 'Alertas'), {
-              tipo: 'Recogido',
-              tipoAlerta: 'Recogido',
-              descripcion: `${siguienteNino.nombreHijo} ha sido recogido el ${fechaHora}`,
-              rutDestinatario: rutConductor,
-              rutHijo: siguienteNino.rutHijo,
-              nombreHijo: siguienteNino.nombreHijo,
-              patenteFurgon: pasajeroData.patenteFurgon || '',
-              fechaHoraRecogido: fechaHora,
-              creadoEn: serverTimestamp(),
-              leida: false,
-            });
-            console.log('✅ Alerta de Recogido creada para conductor');
-          }
         } else {
           console.error('❌ No se pudo crear alerta: rutApoderado vacío');
         }
@@ -2104,12 +2232,23 @@ export default function PaginaPrincipalConductor() {
           minute: '2-digit',
         });
         
-        // Actualizar estado en lista_pasajeros
+        // Formatear hora completa para guardar en historial
+        const horaEntregadoFormateada = ahora.toLocaleString('es-CL', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+        
+        // Actualizar estado en lista_pasajeros con hora formateada
         await setDoc(
           doc(db, 'lista_pasajeros', pasajeroDoc.id),
           {
             estadoViaje: 'entregado',
             fechaEntregado: serverTimestamp(),
+            horaEntregadoFormateada: horaEntregadoFormateada,
           },
           { merge: true }
         );
@@ -2122,7 +2261,7 @@ export default function PaginaPrincipalConductor() {
             nombreHijo: siguienteNino.nombreHijo,
             patenteFurgon: pasajeroData.patenteFurgon,
           });
-          // Crear alerta para el apoderado
+          // Crear alerta SOLO para el apoderado (el conductor no necesita notificación de su propia acción)
           await addDoc(collection(db, 'Alertas'), {
             tipo: 'Entregado',
             tipoAlerta: 'Entregado',
@@ -2136,28 +2275,69 @@ export default function PaginaPrincipalConductor() {
             leida: false,
           });
           console.log('✅ Alerta de Entregado creada para apoderado');
-          
-          // Crear alerta también para el conductor
-          if (rutConductor) {
-            await addDoc(collection(db, 'Alertas'), {
-              tipo: 'Entregado',
-              tipoAlerta: 'Entregado',
-              descripcion: `${siguienteNino.nombreHijo} ha sido entregado el ${fechaHora}`,
-              rutDestinatario: rutConductor,
-              rutHijo: siguienteNino.rutHijo,
-              nombreHijo: siguienteNino.nombreHijo,
-              patenteFurgon: pasajeroData.patenteFurgon || '',
-              fechaHoraEntrega: fechaHora,
-              creadoEn: serverTimestamp(),
-              leida: false,
-            });
-            console.log('✅ Alerta de Entregado creada para conductor');
-          }
         } else {
           console.error('❌ No se pudo crear alerta: rutApoderado vacío');
         }
         
-        Alert.alert('Entregado', `${siguienteNino.nombreHijo} ha sido marcado como entregado.`);
+        // Esperar un momento para que Firestore procese la actualización
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Verificar si todos los niños están entregados (recargar datos actualizados)
+        const todosLosPasajerosQuery = query(
+          listaPasajerosRef,
+          where('rutConductor', '==', rutConductor)
+        );
+        const todosLosPasajerosSnap = await getDocs(todosLosPasajerosQuery);
+        
+        // Obtener los RUTs de los hijos que estaban en la ruta generada
+        const rutHijosEnRuta = new Set(
+          (rutaGenerada?.waypoints || [])
+            .map(w => w.rutHijo)
+            .filter(Boolean) as string[]
+        );
+        
+        // Si no hay waypoints con rutHijo, considerar todos los pasajeros
+        const incluirTodos = rutHijosEnRuta.size === 0;
+        
+        let todosEntregados = true;
+        let cantidadEnRuta = 0;
+        
+        for (const docSnap of todosLosPasajerosSnap.docs) {
+          const data = docSnap.data();
+          const rutHijo = (data.rutHijo || '').toString().trim();
+          const estadoViaje = (data.estadoViaje || '').toString().trim().toLowerCase();
+          
+          // Verificar si este pasajero estaba en la ruta
+          const estabaEnRuta = incluirTodos || rutHijosEnRuta.has(rutHijo);
+          
+          if (estabaEnRuta) {
+            cantidadEnRuta++;
+            if (estadoViaje !== 'entregado') {
+              todosEntregados = false;
+              break;
+            }
+          }
+        }
+        
+        console.log(`📊 Verificación de entrega: ${cantidadEnRuta} niños en ruta, todos entregados: ${todosEntregados}`);
+        
+        // Si todos los niños están entregados, guardar historial y terminar ruta
+        if (todosEntregados && cantidadEnRuta > 0 && rutaGenerada) {
+          console.log('✅ Todos los niños han sido entregados. Guardando historial y terminando ruta...');
+          
+          // Guardar historial de viaje
+          await guardarHistorialViaje();
+          
+          // Terminar la ruta automáticamente (indicar que el historial ya se guardó)
+          await terminarRutaCompleta(true);
+          
+          Alert.alert(
+            'Ruta completada',
+            `Todos los niños han sido entregados. El historial de la ruta ha sido guardado con los datos y horarios de recogida y entrega.`
+          );
+        } else {
+          Alert.alert('Entregado', `${siguienteNino.nombreHijo} ha sido marcado como entregado.`);
+        }
       } else {
         Alert.alert('Error', 'No se encontró el registro del pasajero.');
       }

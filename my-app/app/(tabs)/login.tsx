@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet, Alert } from 'react-native';
+import { View, Text, TextInput, Pressable, StyleSheet, Alert, ScrollView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -89,13 +89,21 @@ export default function LoginScreen() {
         console.log('✅ Rol del usuario:', userData.rol);
 
         // Redirigir según el rol del usuario
-        if (userData.rol === 'Conductor') {
-          router.replace('/(tabs)/conductor/pagina-principal-conductor');
-        } else if (userData.rol === 'Apoderado') {
-          router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-        } else {
-          Alert.alert('Error', 'Rol de usuario no válido.');
-        }
+        // Usar setTimeout para asegurar que AsyncStorage se guarde antes de navegar
+        setTimeout(() => {
+          try {
+            if (userData.rol === 'Conductor') {
+              router.replace('/(tabs)/conductor/pagina-principal-conductor');
+            } else if (userData.rol === 'Apoderado') {
+              router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
+            } else {
+              Alert.alert('Error', 'Rol de usuario no válido.');
+            }
+          } catch (navError) {
+            console.error('Error al navegar:', navError);
+            Alert.alert('Error', 'Ocurrió un error al redirigir. Por favor, intenta de nuevo.');
+          }
+        }, 100);
       } else {
         setErrorLogin('Correo o contraseña incorrectos.');
       }
@@ -107,47 +115,55 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.container}>
-      <Pressable style={styles.backButton} onPress={() => router.push('/')}>
-        <Ionicons name="arrow-back" size={28} color="#127067" />
-      </Pressable>
-
-      <Image
-        source={require('@/assets/images/Furgo_Truck.png')}
-        style={styles.logo}
-        contentFit="contain"
-      />
-
-      <Text style={styles.title}>Ingreso</Text>
-
-      <TextInput
-        style={styles.input}
-        placeholder="Correo"
-        keyboardType="email-address"
-        autoCapitalize="none"
-        value={correo}
-        onChangeText={setCorreo}
-      />
-
-      <TextInput
-        style={styles.input}
-        placeholder="Contraseña"
-        secureTextEntry
-        value={contrasena}
-        onChangeText={setContrasena}
-      />
-
-      {errorLogin ? <Text style={styles.errorText}>{errorLogin}</Text> : null}
-
-      <Pressable style={styles.button} onPress={manejarLogin}>
-        <Text style={styles.buttonText}>Iniciar Sesión</Text>
-      </Pressable>
-
-      <Pressable
-        style={styles.forgotPasswordLink}
-        onPress={() => router.push('/(tabs)/forgot-password')}
+      <ScrollView 
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.forgotPasswordText}>¿Olvidaste tu contraseña?</Text>
-      </Pressable>
+        <Pressable style={styles.backButton} onPress={() => router.push('/')}>
+          <Ionicons name="arrow-back" size={28} color="#127067" />
+        </Pressable>
+
+        <Image
+          source={require('@/assets/images/Furgo_Truck.png')}
+          style={styles.logo}
+          contentFit="contain"
+        />
+
+        <Text style={styles.title}>Ingreso</Text>
+
+        <TextInput
+          style={styles.input}
+          placeholder="Correo"
+          placeholderTextColor="#999"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          value={correo}
+          onChangeText={setCorreo}
+        />
+
+        <TextInput
+          style={styles.input}
+          placeholder="Contraseña"
+          placeholderTextColor="#999"
+          secureTextEntry
+          value={contrasena}
+          onChangeText={setContrasena}
+        />
+
+        {errorLogin ? <Text style={styles.errorText}>{errorLogin}</Text> : null}
+
+        <Pressable style={styles.button} onPress={manejarLogin}>
+          <Text style={styles.buttonText}>Iniciar Sesión</Text>
+        </Pressable>
+
+        <Pressable
+          style={styles.forgotPasswordLink}
+          onPress={() => router.push('/(tabs)/forgot-password')}
+        >
+          <Text style={styles.forgotPasswordText}>¿Olvidaste tu contraseña?</Text>
+        </Pressable>
+      </ScrollView>
     </View>
   );
 }
@@ -155,7 +171,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   backButton: {
     position: 'absolute',
-    top: 40,
+    top: Platform.OS === 'ios' ? 50 : 40,
     left: 20,
     zIndex: 10,
     padding: 5,
@@ -170,9 +186,13 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#fff',
+  },
+  scrollContent: {
+    flexGrow: 1,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
+    paddingTop: Platform.OS === 'ios' ? 60 : 50,
   },
   logo: {
     width: 120,
@@ -191,6 +211,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 10,
     marginBottom: 10,
+    color: '#000',
   },
   button: {
     backgroundColor: '#127067',

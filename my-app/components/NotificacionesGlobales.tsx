@@ -150,6 +150,7 @@ export default function NotificacionesGlobales({
       const rutNormalizado = rut.trim();
       console.log('=== INICIANDO LISTENER DE NOTIFICACIONES GLOBALES ===');
       console.log('RUT usuario:', rutNormalizado);
+      console.log('RUT usuario (original):', rut);
       console.log('Patentes asignadas:', patentes);
       
       // Resetear alertas iniciales cuando cambia el usuario
@@ -185,10 +186,17 @@ export default function NotificacionesGlobales({
       const unsubscribeAlertas = onSnapshot(
         alertasQuery,
         (snapshot) => {
+          console.log('📡 Snapshot recibido - Total documentos:', snapshot.docs.length);
+          console.log('📡 Buscando alertas para RUT:', rutNormalizado);
+          
           const alertasMap = new Map<string, Alerta>();
           
           snapshot.docs.forEach((docSnap: any) => {
             const data = docSnap.data() || {};
+            const rutDestinatarioEnAlerta = (data.rutDestinatario || '').toString().trim();
+            
+            console.log(`📋 Alerta encontrada: ID=${docSnap.id}, Tipo="${data.tipo || data.tipoAlerta || 'N/A'}", RUT Destinatario="${rutDestinatarioEnAlerta}", RUT Buscado="${rutNormalizado}"`);
+            
             const fecha =
               data.creadoEn && typeof data.creadoEn.toDate === 'function'
                 ? data.creadoEn.toDate()
@@ -207,10 +215,10 @@ export default function NotificacionesGlobales({
               patenteFurgon: (data.patenteFurgon || '').toString().trim().toUpperCase(),
             };
             
-            // Log para debug de alertas de Entregado
+            // Log para debug de alertas importantes
             const tipoNormalizado = (tipoAlertaRaw || '').toString().trim().toLowerCase();
-            if (tipoNormalizado === 'entregado' || tipoNormalizado === 'recogido') {
-              console.log(`📬 Alerta detectada: Tipo="${tipoAlertaRaw}", Normalizado="${tipoNormalizado}", Nombre="${data.nombreHijo || 'Sin nombre'}"`);
+            if (tipoNormalizado === 'entregado' || tipoNormalizado === 'recogido' || tipoNormalizado === 'ruta generada') {
+              console.log(`📬 Alerta importante detectada: Tipo="${tipoAlertaRaw}", Normalizado="${tipoNormalizado}", Nombre="${data.nombreHijo || 'Sin nombre'}", RUT Dest="${rutDestinatarioEnAlerta}"`);
             }
             
             if (!alertasMap.has(docSnap.id)) {
@@ -257,39 +265,54 @@ export default function NotificacionesGlobales({
             .slice(0, 10);
 
           // Si es la primera carga, guardar los IDs de las alertas existentes
-          if (alertasInicialesRef.current.size === 0 && alertasOrdenadas.length > 0) {
-            alertasOrdenadas.forEach((alerta) => {
-              alertasInicialesRef.current.add(alerta.id);
-              alertasMostradasEnPopUpRef.current.add(alerta.id);
-            });
-            console.log('📋 Alertas iniciales guardadas:', alertasInicialesRef.current.size, 'alertas (no se mostrarán como pop-up)');
-          }
+          // Pero solo después de un pequeño delay para permitir que las alertas nuevas se detecten
+          const esPrimeraCarga = alertasInicialesRef.current.size === 0;
           
-          // Detectar alertas nuevas (que no estaban en la carga inicial)
-          // SOLO estas se mostrarán como pop-up
-          if (alertasInicialesRef.current.size > 0) {
-            const nuevasAlertas = alertasOrdenadas.filter(
-              (alerta) => !alertasInicialesRef.current.has(alerta.id)
-            );
-            
-            if (nuevasAlertas.length > 0) {
-              console.log('🆕 Alertas nuevas detectadas (se mostrarán como pop-up):', nuevasAlertas.length);
-              nuevasAlertas.forEach((alerta) => {
-                // Solo mostrar alertas de Recogido y Entregado
-                const tipoAlerta = (alerta.tipo || '').toString().trim().toLowerCase();
-                console.log(`🔔 Verificando alerta nueva: ID=${alerta.id}, Tipo="${alerta.tipo}", Tipo normalizado="${tipoAlerta}"`);
-                
-                if (tipoAlerta === 'recogido' || tipoAlerta === 'entregado') {
-                  console.log(`✅ Mostrando pop-up para alerta: ${alerta.tipo} - ${alerta.nombreHijo || 'Sin nombre'}`);
-                  // Agregar a las alertas iniciales para no mostrarla de nuevo
+          if (esPrimeraCarga && alertasOrdenadas.length > 0) {
+            // Usar setTimeout para dar tiempo a que las alertas nuevas se detecten primero
+            setTimeout(() => {
+              alertasOrdenadas.forEach((alerta) => {
+                if (!alertasMostradasEnPopUpRef.current.has(alerta.id)) {
                   alertasInicialesRef.current.add(alerta.id);
-                  // Mostrar como pop-up
-                  mostrarNotificacionPopUp(alerta);
-                } else {
-                  console.log(`⚠️ Alerta no mostrada (tipo no es Recogido/Entregado): "${tipoAlerta}"`);
                 }
               });
-            }
+              console.log('📋 Alertas iniciales guardadas:', alertasInicialesRef.current.size, 'alertas (no se mostrarán como pop-up)');
+            }, 1000); // Esperar 1 segundo antes de marcar como iniciales
+          }
+          
+          // Detectar alertas nuevas (que no estaban en la carga inicial o no se han mostrado)
+          // SOLO estas se mostrarán como pop-up
+          const nuevasAlertas = alertasOrdenadas.filter(
+            (alerta) => !alertasMostradasEnPopUpRef.current.has(alerta.id)
+          );
+          
+          if (nuevasAlertas.length > 0) {
+            console.log('🆕 Alertas nuevas detectadas (se mostrarán como pop-up):', nuevasAlertas.length);
+            nuevasAlertas.forEach((alerta) => {
+              // Mostrar alertas de Ruta Generada, Recogido y Entregado
+              const tipoAlerta = (alerta.tipo || '').toString().trim().toLowerCase();
+              console.log(`🔔 Verificando alerta nueva: ID=${alerta.id}, Tipo="${alerta.tipo}", Tipo normalizado="${tipoAlerta}"`);
+              
+              // Verificar si es una alerta que debe mostrarse como pop-up
+              const debeMostrar = tipoAlerta === 'ruta generada' || 
+                                 tipoAlerta === 'recogido' || 
+                                 tipoAlerta === 'entregado';
+              
+              if (debeMostrar) {
+                console.log(`✅ Mostrando pop-up para alerta: ${alerta.tipo} - ${alerta.nombreHijo || 'Sin nombre'}`);
+                // Marcar como mostrada para no mostrarla de nuevo
+                alertasMostradasEnPopUpRef.current.add(alerta.id);
+                alertasInicialesRef.current.add(alerta.id);
+                // Mostrar como pop-up
+                mostrarNotificacionPopUp(alerta);
+              } else {
+                console.log(`⚠️ Alerta no mostrada (tipo no es Ruta Generada/Recogido/Entregado): "${tipoAlerta}"`);
+                // Aún así marcarla como vista para no procesarla de nuevo
+                alertasMostradasEnPopUpRef.current.add(alerta.id);
+              }
+            });
+          } else {
+            console.log('ℹ️ No hay alertas nuevas en este snapshot');
           }
         },
         (error) => {
@@ -323,6 +346,7 @@ export default function NotificacionesGlobales({
       {notificacionesPopUp.map((notificacion, index) => {
         const tipoAlerta = notificacion.alerta.tipo.toLowerCase();
         const esUrgente = tipoAlerta === 'urgencia';
+        const esRutaGenerada = tipoAlerta === 'ruta generada';
         const esRecogido = tipoAlerta === 'recogido';
         const esEntregado = tipoAlerta === 'entregado';
         
@@ -341,6 +365,13 @@ export default function NotificacionesGlobales({
           textColor = '#fff';
           tipoTextColor = '#fff';
           iconName = 'alert-circle';
+        } else if (esRutaGenerada) {
+          backgroundColor = '#e6f7f5';
+          borderColor = '#127067';
+          iconColor = '#127067';
+          textColor = '#0d5c52';
+          tipoTextColor = '#127067';
+          iconName = 'car';
         } else if (esRecogido) {
           backgroundColor = '#e8f5e9';
           borderColor = '#4caf50';

@@ -242,6 +242,7 @@ export default function ForgotPasswordScreen() {
       <TextInput
         style={styles.input}
         placeholder="Ingresa tu correo electrónico"
+        placeholderTextColor="#999"
         keyboardType="email-address"
         autoCapitalize="none"
         value={correo}
@@ -282,6 +283,7 @@ export default function ForgotPasswordScreen() {
           <TextInput
             style={styles.input}
             placeholder="Ingresa tu respuesta"
+            placeholderTextColor="#999"
             value={respuestaSeguridad}
             onChangeText={(text) => {
               setRespuestaSeguridad(text);
@@ -326,6 +328,7 @@ export default function ForgotPasswordScreen() {
       <TextInput
         style={styles.input}
         placeholder="Nueva contraseña"
+        placeholderTextColor="#999"
         secureTextEntry
         value={nuevaContrasena}
         onChangeText={(text) => {
@@ -340,6 +343,7 @@ export default function ForgotPasswordScreen() {
       <TextInput
         style={styles.input}
         placeholder="Repetir contraseña"
+        placeholderTextColor="#999"
         secureTextEntry
         value={repetirContrasena}
         onChangeText={(text) => {
@@ -498,6 +502,7 @@ const styles = StyleSheet.create({
     padding: 15,
     marginBottom: 10,
     fontSize: 16,
+    color: '#000',
   },
   button: {
     backgroundColor: '#127067',

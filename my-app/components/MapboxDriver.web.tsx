@@ -20,8 +20,20 @@ interface Props {
   route?: {
     waypoints: RouteWaypoint[];
     routeGeometry?: any; // GeoJSON LineString
+    distancia?: string;
+    tiempoEstimado?: number;
   };
 }
+
+// Función para formatear tiempo en formato "Xh.Ym"
+const formatTiempo = (minutos: number): string => {
+  if (minutos < 60) {
+    return `${minutos}m`;
+  }
+  const horas = Math.floor(minutos / 60);
+  const minutosRestantes = minutos % 60;
+  return `${horas}h.${minutosRestantes}m`;
+};
 
 export default function MapboxDriver({ accessToken, driverLocation, simulatedPath, route }: Props) {
   const mapContainer = useRef(null);
@@ -29,6 +41,7 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
   const markerRef = useRef<mapboxgl.Marker | null>(null);
   const routeMarkersRef = useRef<mapboxgl.Marker[]>([]);
   const routeLayerRef = useRef<string | null>(null);
+  const rutaAnimadaRef = useRef<string | null>(null); // Para rastrear si ya se animó esta ruta
   const [direccion, setDireccion] = useState<string>('');
   const [userLocation, setUserLocation] = useState<LatLng | null>(null);
   
@@ -458,8 +471,14 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
       // Limpiar marcadores de destino
       routeMarkersRef.current.forEach(marker => marker.remove());
       routeMarkersRef.current = [];
+      // Resetear el ref cuando no hay ruta
+      rutaAnimadaRef.current = null;
       return;
     }
+
+    // Crear un identificador único para esta ruta basado en los waypoints
+    const rutaId = route.waypoints.map(w => `${w.coordinates.latitude},${w.coordinates.longitude}`).join('|');
+    const esRutaNueva = rutaAnimadaRef.current !== rutaId;
 
     // Limpiar marcadores anteriores
     routeMarkersRef.current.forEach(marker => marker.remove());
@@ -540,20 +559,64 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
         });
       }
 
-      // Ajustar el mapa para mostrar toda la ruta
-      if (route.waypoints.length > 0) {
+      // Solo animar si es una ruta nueva (primera vez que se genera)
+      if (esRutaNueva && route.waypoints.length > 0) {
         const bounds = new mapboxgl.LngLatBounds();
+        
+        // Incluir todos los waypoints en los bounds
         route.waypoints.forEach(waypoint => {
           bounds.extend([waypoint.coordinates.longitude, waypoint.coordinates.latitude]);
         });
+        
+        // Si hay ubicación del conductor, incluirla también en los bounds
         if (driverLocation || userLocation) {
           const locationToUse = driverLocation || userLocation;
-          bounds.extend([locationToUse!.longitude, locationToUse!.latitude]);
+          if (locationToUse) {
+            bounds.extend([locationToUse.longitude, locationToUse.latitude]);
+          }
         }
+        
+        // Marcar esta ruta como ya animada
+        rutaAnimadaRef.current = rutaId;
+        
+        // Primero ajustar para mostrar toda la ruta
         map.current.fitBounds(bounds, {
           padding: { top: 50, bottom: 50, left: 50, right: 50 },
-          maxZoom: 16,
+          maxZoom: 15,
+          duration: 2000,
         });
+        
+        // Después de mostrar la ruta completa, centrar en el vehículo
+        if (driverLocation || userLocation) {
+          const locationToUse = driverLocation || userLocation;
+          if (locationToUse) {
+            setTimeout(() => {
+              if (map.current) {
+                map.current.flyTo({
+                  center: [locationToUse.longitude, locationToUse.latitude],
+                  zoom: 16,
+                  pitch: 0,
+                  bearing: 0,
+                  duration: 1500,
+                  essential: true
+                });
+              }
+            }, 2500); // Esperar 2.5 segundos después de fitBounds
+          }
+        }
+      } else if (!esRutaNueva && (driverLocation || userLocation)) {
+        // Si la ruta ya fue animada, solo centrar en el vehículo sin animación amplia
+        const locationToUse = driverLocation || userLocation;
+        if (locationToUse && map.current) {
+          map.current.flyTo({
+            center: [locationToUse.longitude, locationToUse.latitude],
+            zoom: 16,
+            pitch: 0,
+            bearing: 0,
+            duration: 1000,
+            essential: true
+          });
+        }
       }
     }
   }, [route, driverLocation, userLocation]);
@@ -656,6 +719,16 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
           <strong>{direccion}</strong>
         </div>
       )}
+      {/* Cuadro de información de ruta (tiempo y distancia) */}
+      {route && route.distancia && route.tiempoEstimado && (
+        <div style={styles.routeInfoBox}>
+          <div style={styles.routeInfoContent}>
+            <span style={styles.routeInfoText}>
+              {formatTiempo(route.tiempoEstimado)} · {route.distancia} km
+            </span>
+          </div>
+        </div>
+      )}
       {/* Botón de centrar - siempre visible si hay ubicación disponible */}
       {(userLocation || driverLocation) && (
         <button
@@ -727,6 +800,28 @@ const styles = {
     zIndex: 1000,
     boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
     maxWidth: '80%',
+  },
+  routeInfoBox: {
+    position: 'absolute' as const,
+    bottom: '20px',
+    left: '10px',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: '10px',
+    padding: '14px 18px',
+    zIndex: 1000,
+    boxShadow: '0 2px 12px rgba(0,0,0,0.25)',
+    minWidth: '150px',
+  },
+  routeInfoContent: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  routeInfoText: {
+    fontSize: '18px',
+    fontWeight: '600',
+    color: '#333',
+    letterSpacing: '0.3px',
   },
   errorContainer: {
     flex: 1,

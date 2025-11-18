@@ -6,7 +6,6 @@ import { useRouter } from 'expo-router';
 import { addDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import React, { useRef, useState } from 'react';
 import { Picker } from '@react-native-picker/picker';
-import { Platform } from 'react-native';
 import {
   Alert,
   Pressable,
@@ -15,6 +14,8 @@ import {
   Text,
   TextInput,
   View,
+  ScrollView,
+  Platform,
 } from 'react-native';
 import { db } from '../../firebaseConfig';
 
@@ -372,80 +373,92 @@ export default function RegisterScreen() {
 
   return (
     <View style={styles.container}>
-      <Pressable style={styles.backButton} onPress={() => router.push('/')}>
-        <Ionicons name="arrow-back" size={28} color="#127067" />
-      </Pressable>
-      <Image
-        source={require('@/assets/images/Furgo_Truck.png')}
-        style={styles.logo}
-        contentFit="contain"
-      />
+      <ScrollView 
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <Pressable style={styles.backButton} onPress={() => router.push('/')}>
+          <Ionicons name="arrow-back" size={28} color="#127067" />
+        </Pressable>
+        <Image
+          source={require('@/assets/images/Furgo_Truck.png')}
+          style={styles.logo}
+          contentFit="contain"
+        />
 
-      <Text style={styles.title}>Registro</Text>
+        <Text style={styles.title}>Registro</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Nombres"
-        value={nombres}
-        onChangeText={setNombres}
-      />
-      {errores.nombres ? <Text style={styles.errorText}>{errores.nombres}</Text> : null}
+        <TextInput
+          style={styles.input}
+          placeholder="Nombres"
+          placeholderTextColor="#999"
+          value={nombres}
+          onChangeText={setNombres}
+        />
+        {errores.nombres ? <Text style={styles.errorText}>{errores.nombres}</Text> : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Apellidos"
-        value={apellidos}
-        onChangeText={setApellidos}
-      />
-      {errores.apellidos ? <Text style={styles.errorText}>{errores.apellidos}</Text> : null}
+        <TextInput
+          style={styles.input}
+          placeholder="Apellidos"
+          placeholderTextColor="#999"
+          value={apellidos}
+          onChangeText={setApellidos}
+        />
+        {errores.apellidos ? <Text style={styles.errorText}>{errores.apellidos}</Text> : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Correo"
-        keyboardType="email-address"
-        autoCapitalize="none"
-        value={correo}
-        onChangeText={setCorreo}
-      />
-      {errores.correo ? <Text style={styles.errorText}>{errores.correo}</Text> : null}
+        <TextInput
+          style={styles.input}
+          placeholder="Correo"
+          placeholderTextColor="#999"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          value={correo}
+          onChangeText={setCorreo}
+        />
+        {errores.correo ? <Text style={styles.errorText}>{errores.correo}</Text> : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Número Celular"
-        keyboardType="phone-pad"
-        value={telefono}
-        onChangeText={manejarCambioTelefono}
-      />
-      {errores.telefono ? <Text style={styles.errorText}>{errores.telefono}</Text> : null}
+        <TextInput
+          style={styles.input}
+          placeholder="Número Celular"
+          placeholderTextColor="#999"
+          keyboardType="phone-pad"
+          value={telefono}
+          onChangeText={manejarCambioTelefono}
+        />
+        {errores.telefono ? <Text style={styles.errorText}>{errores.telefono}</Text> : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Contraseña"
-        secureTextEntry
-        value={contrasena}
-        onChangeText={setContrasena}
-      />
-      {errores.contrasena ? <Text style={styles.errorText}>{errores.contrasena}</Text> : null}
+        <TextInput
+          style={styles.input}
+          placeholder="Contraseña"
+          placeholderTextColor="#999"
+          secureTextEntry
+          value={contrasena}
+          onChangeText={setContrasena}
+        />
+        {errores.contrasena ? <Text style={styles.errorText}>{errores.contrasena}</Text> : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Repetir Contraseña"
-        secureTextEntry
-        value={repetirContrasena}
-        onChangeText={setRepetirContrasena}
-      />
-      {errores.repetirContrasena ? <Text style={styles.errorText}>{errores.repetirContrasena}</Text> : null}
+        <TextInput
+          style={styles.input}
+          placeholder="Repetir Contraseña"
+          placeholderTextColor="#999"
+          secureTextEntry
+          value={repetirContrasena}
+          onChangeText={setRepetirContrasena}
+        />
+        {errores.repetirContrasena ? <Text style={styles.errorText}>{errores.repetirContrasena}</Text> : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="RUT"
-        value={rut}
-        onChangeText={manejarCambioRUT}
-        keyboardType="default"
-        autoCapitalize="characters"
-        maxLength={13}
-      />
-      {errores.rut ? <Text style={styles.errorText}>{errores.rut}</Text> : null}
+        <TextInput
+          style={styles.input}
+          placeholder="RUT"
+          placeholderTextColor="#999"
+          value={rut}
+          onChangeText={manejarCambioRUT}
+          keyboardType="default"
+          autoCapitalize="characters"
+          maxLength={13}
+        />
+        {errores.rut ? <Text style={styles.errorText}>{errores.rut}</Text> : null}
 
       <Text style={styles.sectionTitle}>Pregunta de Seguridad</Text>
       <Text style={styles.sectionSubtitle}>
@@ -475,6 +488,7 @@ export default function RegisterScreen() {
       <TextInput
         style={styles.input}
         placeholder="Respuesta"
+        placeholderTextColor="#999"
         value={respuestaSeguridad}
         onChangeText={(text) => {
           setRespuestaSeguridad(text);
@@ -514,6 +528,7 @@ export default function RegisterScreen() {
       >
         <Text style={styles.buttonText}>Regístrate</Text>
       </Pressable>
+      </ScrollView>
     </View>
   );
 }
@@ -521,17 +536,21 @@ export default function RegisterScreen() {
 const styles = StyleSheet.create({
   backButton: {
     position: 'absolute',
-    top: 40,
+    top: Platform.OS === 'ios' ? 50 : 40,
     left: 20,
     zIndex: 10,
     padding: 5,
   },
   container: {
     flex: 1,
-    padding: 20,
     backgroundColor: '#ffffff',
+  },
+  scrollContent: {
+    flexGrow: 1,
+    padding: 20,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingTop: Platform.OS === 'ios' ? 60 : 50,
   },
   logo: {
     width: 120,
@@ -550,6 +569,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 10,
     marginBottom: 10,
+    color: '#000',
   },
   switchContainer: {
     flexDirection: 'row',

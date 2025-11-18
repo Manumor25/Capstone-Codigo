@@ -80,7 +80,21 @@ export default function PaginaPrincipal() {
   const [cargandoUbicacion, setCargandoUbicacion] = useState(true);
   const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0);
   const [estadoViajeHijo, setEstadoViajeHijo] = useState<string>(''); // 'recogido', 'entregado', o ''
+  const [hayRutaActiva, setHayRutaActiva] = useState<boolean>(false); // Para saber si hay una ruta generada
+  const estadoEntregadoConfirmadoRef = useRef<boolean>(false); // Ref para rastrear si el estado "entregado" ya fue confirmado con OK
+  const [rutaActiva, setRutaActiva] = useState<{
+    waypoints: Array<{ coordinates: { latitude: number; longitude: number }; name: string; rutHijo?: string }>;
+    routeGeometry?: any;
+    distancia?: string;
+    tiempoEstimado?: number;
+  } | null>(null);
+  const rutaActivaRef = useRef(rutaActiva);
   useSyncRutActivo();
+  
+  // Mantener el ref actualizado
+  useEffect(() => {
+    rutaActivaRef.current = rutaActiva;
+  }, [rutaActiva]);
 
   useEffect(() => {
     const cargarDatos = async () => {
@@ -458,6 +472,120 @@ export default function PaginaPrincipal() {
     };
   }, []);
 
+  // Listener para obtener la ruta activa del conductor
+  useEffect(() => {
+    let unsubscribeRuta: (() => void) | null = null;
+
+    const obtenerRutaActiva = async () => {
+      try {
+        // Si no hay rutConductor, intentar obtenerlo desde lista_pasajeros
+        let rutConductorParaRuta = rutConductor;
+        
+        if (!rutConductorParaRuta && hijoSeleccionado && rutUsuario) {
+          try {
+            const listaPasajerosRef = collection(db, 'lista_pasajeros');
+            const listaPasajerosQuery = query(
+              listaPasajerosRef,
+              where('rutHijo', '==', hijoSeleccionado.rut),
+              where('rutApoderado', '==', rutUsuario.trim()),
+              limit(1)
+            );
+            const listaPasajerosSnap = await getDocs(listaPasajerosQuery);
+            if (!listaPasajerosSnap.empty) {
+              const pasajeroData = listaPasajerosSnap.docs[0].data();
+              rutConductorParaRuta = (pasajeroData.rutConductor || '').toString().trim();
+              if (rutConductorParaRuta && !rutConductor) {
+                setRutConductor(rutConductorParaRuta);
+              }
+            }
+          } catch (error) {
+            console.error('Error al obtener rutConductor para ruta:', error);
+          }
+        }
+        
+        if (!rutConductorParaRuta) {
+          console.log('⚠️ No hay rutConductor disponible para obtener ruta activa');
+          setRutaActiva(null);
+          return;
+        }
+
+        console.log('🔍 Configurando listener de ruta activa para conductor:', rutConductorParaRuta);
+        const rutasActivasRef = collection(db, 'rutas_activas');
+        const rutaDocRef = doc(rutasActivasRef, rutConductorParaRuta);
+        
+        unsubscribeRuta = onSnapshot(
+          rutaDocRef,
+          (snapshot) => {
+            console.log('📡 Snapshot de ruta activa recibido:', snapshot.exists());
+            if (snapshot.exists()) {
+              const data = snapshot.data();
+              console.log('📊 Datos de ruta activa:', {
+                activa: data.activa,
+                waypointsCount: data.waypoints?.length || 0,
+                tieneRouteGeometry: !!data.routeGeometry,
+              });
+              
+              if (data.activa === true && data.waypoints && data.waypoints.length > 0) {
+                // Verificar si el hijo seleccionado está en la ruta
+                if (hijoSeleccionado) {
+                  const hijoEnRuta = data.waypoints.some((w: any) => w.rutHijo === hijoSeleccionado.rut);
+                  console.log('👶 Hijo en ruta?', hijoEnRuta, 'RUT hijo:', hijoSeleccionado.rut);
+                  if (hijoEnRuta) {
+                    console.log('✅ Estableciendo ruta activa para apoderado');
+                    const nuevaRutaActiva = {
+                      waypoints: data.waypoints,
+                      routeGeometry: data.routeGeometry,
+                      distancia: data.distancia,
+                      tiempoEstimado: data.tiempoEstimado,
+                    };
+                    setRutaActiva(nuevaRutaActiva);
+                    // Actualizar hayRutaActiva inmediatamente cuando se establece la ruta
+                    setHayRutaActiva(true);
+                    console.log('✅ hayRutaActiva actualizado a true (ruta activa establecida)');
+                    return;
+                  }
+                } else {
+                  // Si no hay hijo seleccionado, establecer la ruta de todos modos
+                  console.log('✅ Estableciendo ruta activa (sin hijo seleccionado)');
+                  const nuevaRutaActiva = {
+                    waypoints: data.waypoints,
+                    routeGeometry: data.routeGeometry,
+                    distancia: data.distancia,
+                    tiempoEstimado: data.tiempoEstimado,
+                  };
+                  setRutaActiva(nuevaRutaActiva);
+                  // Actualizar hayRutaActiva inmediatamente cuando se establece la ruta
+                  setHayRutaActiva(true);
+                  console.log('✅ hayRutaActiva actualizado a true (ruta activa establecida sin hijo)');
+                  return;
+                }
+              }
+            }
+            console.log('❌ No hay ruta activa o no cumple condiciones');
+            setRutaActiva(null);
+            // No cambiar hayRutaActiva a false aquí, ya que puede haber pasajeros con estado 'recogido'
+            // El listener de ruta activa se encargará de actualizar esto
+          },
+          (error) => {
+            console.error('❌ Error al obtener ruta activa:', error);
+            setRutaActiva(null);
+          }
+        );
+      } catch (error) {
+        console.error('❌ Error al configurar listener de ruta activa:', error);
+        setRutaActiva(null);
+      }
+    };
+
+    obtenerRutaActiva();
+
+    return () => {
+      if (unsubscribeRuta) {
+        unsubscribeRuta();
+      }
+    };
+  }, [rutConductor, hijoSeleccionado, rutUsuario]);
+
   // Listener para contar mensajes no leídos
   useEffect(() => {
     let unsubscribeMensajes: (() => void) | null = null;
@@ -550,14 +678,19 @@ export default function PaginaPrincipal() {
     };
   }, []);
 
-  // Listener para obtener el estado del viaje del hijo
+  // Listener para obtener el estado del viaje del hijo y verificar si hay ruta activa
   useEffect(() => {
+    // Resetear el flag de confirmación cuando cambia el hijo seleccionado
+    estadoEntregadoConfirmadoRef.current = false;
+    
     if (!hijoSeleccionado || !rutUsuario) {
       setEstadoViajeHijo('');
+      setHayRutaActiva(false);
       return;
     }
 
     let unsubscribeEstadoViaje: (() => void) | null = null;
+    let unsubscribeRutaActiva: (() => void) | null = null;
 
     const obtenerEstadoViaje = async () => {
       try {
@@ -577,28 +710,106 @@ export default function PaginaPrincipal() {
               const estado = data.estadoViaje || '';
               
               // Verificar si hay una alerta leída correspondiente
-              // Si hay una alerta leída de tipo "Recogido" o "Entregado" para este hijo,
-              // no mostrar el estado en verde
-              const alertaLeida = alertas.find(
+              // Si hay una alerta leída de tipo "Recogido" para este hijo,
+              // no mostrar el estado (pero NO resetear si es "Entregado" - solo se resetea con OK)
+              const alertaRecogidoLeida = alertas.find(
                 (a) =>
-                  (a.tipo === 'Recogido' || a.tipo === 'Entregado') &&
+                  a.tipo === 'Recogido' &&
                   a.rutHijo === hijoSeleccionado.rut &&
                   a.leida === true
               );
               
-              // Solo mostrar el estado si no hay una alerta leída correspondiente
-              if (alertaLeida) {
-                setEstadoViajeHijo('');
-              } else {
+              // Si el estado actual es "entregado" y NO ha sido confirmado con OK,
+              // NO permitir que se resetee automáticamente desde la base de datos
+              const estadoActual = estadoViajeHijo;
+              if (estadoActual === 'entregado' && !estadoEntregadoConfirmadoRef.current) {
+                // Mantener el estado "entregado" hasta que se presione OK
+                console.log('🔒 Manteniendo estado "entregado" hasta que se presione OK');
+                return; // No actualizar el estado
+              }
+              
+              // Si el estado en la base de datos cambió a "entregado", establecerlo
+              if (estado === 'entregado' && estadoActual !== 'entregado') {
+                estadoEntregadoConfirmadoRef.current = false; // Resetear el flag cuando llega un nuevo "entregado"
+                setEstadoViajeHijo('entregado');
+                return;
+              }
+              
+              // NO resetear el estado "recogido" automáticamente cuando hay alerta leída
+              // El estado debe mantenerse hasta que cambie a "entregado"
+              // Solo actualizar el estado desde la base de datos
+              if (estado !== 'entregado' || estadoEntregadoConfirmadoRef.current) {
+                // Si NO es "entregado" o ya fue confirmado con OK, actualizar normalmente
                 setEstadoViajeHijo(estado);
+                console.log('📊 Estado actualizado desde BD:', estado);
               }
             } else {
-              setEstadoViajeHijo('');
+              // Solo resetear si el estado "entregado" ya fue confirmado
+              if (estadoEntregadoConfirmadoRef.current || estadoViajeHijo !== 'entregado') {
+                setEstadoViajeHijo('');
+              }
             }
           },
           (error) => {
             console.error('Error al obtener estado del viaje:', error);
-            setEstadoViajeHijo('');
+            // Solo resetear en error si no estamos en estado "entregado" sin confirmar
+            if (estadoViajeHijo !== 'entregado' || estadoEntregadoConfirmadoRef.current) {
+              setEstadoViajeHijo('');
+            }
+          }
+        );
+
+        // Verificar si hay una ruta activa (si hay algún pasajero del mismo conductor con estado no entregado)
+        const rutaActivaQuery = query(
+          listaPasajerosRef,
+          where('rutApoderado', '==', rutUsuario.trim())
+        );
+
+        unsubscribeRutaActiva = onSnapshot(
+          rutaActivaQuery,
+          (snapshot) => {
+            // Verificar si hay algún pasajero con estado que indique ruta activa
+            // Una ruta está activa si:
+            // 1. Hay una ruta activa guardada en la base de datos (rutaActiva !== null)
+            // 2. O hay al menos un pasajero con estado 'recogido' (ruta en progreso)
+            // Si todos tienen estado vacío y no hay ruta activa, no hay ruta
+            // NO está activa si todos están 'entregado' o no hay pasajeros
+            let tieneRutaActiva = false;
+            
+            // Verificar si hay una ruta activa guardada usando el ref para acceder al valor actual
+            const rutaActivaActual = rutaActivaRef.current;
+            const tieneRutaGuardada = rutaActivaActual !== null && rutaActivaActual.waypoints && rutaActivaActual.waypoints.length > 0;
+            
+            if (snapshot.empty) {
+              // Si no hay pasajeros, verificar si hay ruta activa guardada
+              console.log('📋 No hay pasajeros, verificando ruta guardada:', tieneRutaGuardada);
+              setHayRutaActiva(tieneRutaGuardada);
+              return;
+            }
+            
+            snapshot.docs.forEach((docSnap) => {
+              const data = docSnap.data();
+              const estado = (data.estadoViaje || '').toString().trim().toLowerCase();
+              
+              // Si hay al menos un pasajero con estado 'recogido', hay ruta activa
+              // Esto indica que la ruta está en progreso
+              if (estado === 'recogido') {
+                tieneRutaActiva = true;
+              }
+            });
+            
+            // También considerar si hay una ruta activa guardada
+            const resultado = tieneRutaActiva || tieneRutaGuardada;
+            console.log('📋 Verificación de ruta activa:', {
+              tieneRutaActiva,
+              tieneRutaGuardada,
+              resultado,
+            });
+            setHayRutaActiva(resultado);
+          },
+          (error) => {
+            console.error('Error al verificar ruta activa:', error);
+            setHayRutaActiva(false);
           }
         );
       } catch (error) {
@@ -612,8 +823,44 @@ export default function PaginaPrincipal() {
       if (unsubscribeEstadoViaje) {
         unsubscribeEstadoViaje();
       }
+      if (unsubscribeRutaActiva) {
+        unsubscribeRutaActiva();
+      }
     };
   }, [hijoSeleccionado, rutUsuario, alertas]);
+
+  // Actualizar hayRutaActiva cuando cambie rutaActiva
+  useEffect(() => {
+    console.log('🔄 Verificando rutaActiva para actualizar hayRutaActiva:', {
+      tieneRutaActiva: !!rutaActiva,
+      waypointsCount: rutaActiva?.waypoints?.length || 0,
+      rutHijoSeleccionado: hijoSeleccionado?.rut,
+    });
+    
+    if (rutaActiva && rutaActiva.waypoints && rutaActiva.waypoints.length > 0) {
+      // Si hay una ruta activa y el hijo está en la ruta, marcar como ruta activa
+      if (hijoSeleccionado) {
+        const hijoEnRuta = rutaActiva.waypoints.some((w: any) => w.rutHijo === hijoSeleccionado.rut);
+        console.log('👶 Verificando si hijo está en ruta:', {
+          hijoEnRuta,
+          rutHijo: hijoSeleccionado.rut,
+          waypoints: rutaActiva.waypoints.map((w: any) => w.rutHijo),
+        });
+        if (hijoEnRuta) {
+          console.log('✅ Actualizando hayRutaActiva a true (ruta activa detectada para hijo seleccionado)');
+          setHayRutaActiva(true);
+          return;
+        }
+      } else {
+        // Si no hay hijo seleccionado pero hay ruta activa, también marcar como activa
+        console.log('✅ Actualizando hayRutaActiva a true (ruta activa sin hijo seleccionado)');
+        setHayRutaActiva(true);
+        return;
+      }
+    }
+    // No cambiar a false automáticamente, ya que puede haber pasajeros con estado 'recogido'
+    // El listener de ruta activa se encargará de actualizar esto
+  }, [rutaActiva, hijoSeleccionado]);
 
   // Función para normalizar RUT (eliminar puntos y guiones)
   const normalizarRut = (rut: string): string => {
@@ -1541,10 +1788,27 @@ export default function PaginaPrincipal() {
             <Text style={styles.loadingText}>Cargando ubicación del conductor...</Text>
           </View>
         ) : ubicacionConductor ? (
-          <MapboxDriver
-            accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
-            driverLocation={ubicacionConductor}
-          />
+          <>
+            <MapboxDriver
+              accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
+              driverLocation={ubicacionConductor}
+              route={rutaActiva || undefined}
+            />
+            {/* Debug: Mostrar información de la ruta activa */}
+            {__DEV__ && rutaActiva && (
+              <View style={{ position: 'absolute', top: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 4, zIndex: 1000 }}>
+                <Text style={{ color: '#fff', fontSize: 10 }}>
+                  Ruta activa: {rutaActiva.waypoints?.length || 0} waypoints
+                </Text>
+                <Text style={{ color: '#fff', fontSize: 10 }}>
+                  hayRutaActiva: {hayRutaActiva ? 'true' : 'false'}
+                </Text>
+                <Text style={{ color: '#fff', fontSize: 10 }}>
+                  estadoViajeHijo: {estadoViajeHijo || 'vacío'}
+                </Text>
+              </View>
+            )}
+          </>
         ) : (
           <View style={styles.noUbicacionContainer}>
             <Text style={styles.noUbicacionText}>
@@ -1560,12 +1824,88 @@ export default function PaginaPrincipal() {
           <View style={styles.horariosHeader}>
             <View style={styles.horariosTitleContainer}>
               <Text style={styles.horariosTitle}>Horario de Clases</Text>
-              {estadoViajeHijo === 'recogido' && (
-                <Text style={styles.estadoViaje}>Abordo</Text>
-              )}
-              {estadoViajeHijo === 'entregado' && (
-                <Text style={styles.estadoViaje}>Entregado</Text>
-              )}
+              <View style={styles.estadoContainer}>
+                {estadoViajeHijo === 'entregado' && (
+                  <View style={styles.estadoEntregadoContainer}>
+                    <View style={styles.estadoBadgeEntregado}>
+                      <Ionicons name="checkmark-circle" size={16} color="#fff" />
+                      <Text style={styles.estadoViajeEntregado}>Entregado</Text>
+                    </View>
+                    <Pressable
+                      style={styles.botonOk}
+                      onPress={async () => {
+                        // Marcar que el estado "entregado" fue confirmado con OK
+                        estadoEntregadoConfirmadoRef.current = true;
+                        
+                        // Resetear el estado del viaje a vacío después de presionar OK
+                        try {
+                          const listaPasajerosRef = collection(db, 'lista_pasajeros');
+                          const estadoQuery = query(
+                            listaPasajerosRef,
+                            where('rutHijo', '==', hijoSeleccionado.rut),
+                            where('rutApoderado', '==', rutUsuario.trim()),
+                            limit(1)
+                          );
+                          const snapshot = await getDocs(estadoQuery);
+                          if (!snapshot.empty) {
+                            const docRef = doc(db, 'lista_pasajeros', snapshot.docs[0].id);
+                            await setDoc(docRef, { estadoViaje: '' }, { merge: true });
+                            setEstadoViajeHijo('');
+                            console.log('✅ Estado reseteado a vacío después de presionar OK');
+                            
+                            // Verificar si hay ruta activa después del reset
+                            // Si no hay otros pasajeros con estado 'recogido', no hay ruta activa
+                            const rutaActivaQuery = query(
+                              listaPasajerosRef,
+                              where('rutApoderado', '==', rutUsuario.trim())
+                            );
+                            const rutaActivaSnap = await getDocs(rutaActivaQuery);
+                            let tieneRutaActiva = false;
+                            
+                            rutaActivaSnap.docs.forEach((docSnap) => {
+                              const data = docSnap.data();
+                              const estado = (data.estadoViaje || '').toString().trim().toLowerCase();
+                              if (estado === 'recogido') {
+                                tieneRutaActiva = true;
+                              }
+                            });
+                            
+                            // También verificar si hay ruta activa guardada
+                            if (rutaActivaRef.current && rutaActivaRef.current.waypoints && rutaActivaRef.current.waypoints.length > 0) {
+                              tieneRutaActiva = true;
+                            }
+                            
+                            setHayRutaActiva(tieneRutaActiva);
+                          }
+                        } catch (error) {
+                          console.error('Error al resetear estado:', error);
+                          Alert.alert('Error', 'No se pudo resetear el estado.');
+                        }
+                      }}
+                    >
+                      <Text style={styles.botonOkText}>OK</Text>
+                    </Pressable>
+                  </View>
+                )}
+                {estadoViajeHijo !== 'entregado' && !hayRutaActiva && (
+                  <View style={styles.estadoBadgeSinRuta}>
+                    <Ionicons name="time-outline" size={14} color="#999" />
+                    <Text style={styles.estadoViajeSinRuta}>Sin Ruta</Text>
+                  </View>
+                )}
+                {estadoViajeHijo !== 'entregado' && hayRutaActiva && !estadoViajeHijo && (
+                  <View style={styles.estadoBadgeEnCamino}>
+                    <Ionicons name="car-outline" size={14} color="#127067" />
+                    <Text style={styles.estadoViajeEnCamino}>Conductor en camino</Text>
+                  </View>
+                )}
+                {estadoViajeHijo !== 'entregado' && hayRutaActiva && estadoViajeHijo === 'recogido' && (
+                  <View style={styles.estadoBadgeAbordo}>
+                    <Ionicons name="bus-outline" size={14} color="#28a745" />
+                    <Text style={styles.estadoViajeAbordo}>Abordo</Text>
+                  </View>
+                )}
+              </View>
             </View>
             <Text style={styles.horariosSubtitle}>{hijoSeleccionado.nombres} {hijoSeleccionado.apellidos}</Text>
           </View>
@@ -2050,10 +2390,107 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#127067',
   },
-  estadoViaje: {
-    fontSize: 16,
-    fontWeight: 'bold',
+  estadoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  estadoBadgeSinRuta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#f5f5f5',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  estadoBadgeEnCamino: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#e6f7f5',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#127067',
+  },
+  estadoBadgeAbordo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#e8f5e9',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#28a745',
+  },
+  estadoBadgeEntregado: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#28a745',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    ...makeShadow(
+      '0 2px 8px rgba(40, 167, 69, 0.3)',
+      {
+        shadowColor: '#28a745',
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        shadowOffset: { width: 0, height: 2 },
+      }
+    ),
+  },
+  estadoViajeSinRuta: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#999',
+  },
+  estadoViajeEnCamino: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#127067',
+  },
+  estadoViajeAbordo: {
+    fontSize: 13,
+    fontWeight: '600',
     color: '#28a745',
+  },
+  estadoViajeEntregado: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  estadoEntregadoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  botonOk: {
+    backgroundColor: '#127067',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    ...makeShadow(
+      '0 2px 8px rgba(18, 112, 103, 0.3)',
+      {
+        shadowColor: '#127067',
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        shadowOffset: { width: 0, height: 2 },
+      }
+    ),
+  },
+  botonOkText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
   horariosSubtitle: {
     fontSize: 14,
