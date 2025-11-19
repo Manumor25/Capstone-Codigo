@@ -533,13 +533,28 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
 
       routeLayerRef.current = layerId;
 
+      // Asegurarse de que routeGeometry esté en el formato correcto para Mapbox
+      let geometryData = route.routeGeometry;
+      
+      // Si es un Feature, usar directamente; si es solo geometry, convertirlo a Feature
+      if (geometryData.type === 'Feature') {
+        // Ya es un Feature, usar directamente
+      } else if (geometryData.type === 'LineString') {
+        // Es solo geometry, convertirlo a Feature
+        geometryData = {
+          type: 'Feature',
+          geometry: geometryData,
+          properties: {}
+        };
+      }
+
       if (!map.current.getSource(sourceId)) {
         map.current.addSource(sourceId, {
           type: 'geojson',
-          data: route.routeGeometry,
+          data: geometryData,
         });
       } else {
-        (map.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(route.routeGeometry);
+        (map.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(geometryData);
       }
 
       if (!map.current.getLayer(layerId)) {
@@ -552,9 +567,9 @@ export default function MapboxDriver({ accessToken, driverLocation, simulatedPat
             'line-cap': 'round',
           },
           paint: {
-            'line-color': '#127067',
-            'line-width': 4,
-            'line-opacity': 0.75,
+            'line-color': '#1dbb7f', // Verde como en la imagen del conductor
+            'line-width': 5,
+            'line-opacity': 1,
           },
         });
       }

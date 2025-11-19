@@ -4,7 +4,7 @@ import { makeShadow } from '@/utils/shadow';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Link, useRouter } from 'expo-router';
-import { collection, getDocs, limit, orderBy, query, where, onSnapshot, Unsubscribe, deleteDoc, doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, limit, orderBy, query, where, onSnapshot, Unsubscribe, deleteDoc, doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
@@ -415,12 +415,13 @@ export default function PaginaPrincipal() {
         const rutConductorEncontrado = (pasajeroData.rutConductor || '').toString().trim();
 
         if (!rutConductorEncontrado) {
-          console.log('No se encontró RUT del conductor');
+          console.log('⚠️ No se encontró RUT del conductor en lista_pasajeros');
           setCargandoUbicacion(false);
           setUbicacionConductor(null);
           return;
         }
 
+        console.log('✅ RUT del conductor obtenido desde lista_pasajeros:', rutConductorEncontrado);
         setRutConductor(rutConductorEncontrado);
 
         // 2. Escuchar cambios en tiempo real de la ubicación del conductor
@@ -503,66 +504,99 @@ export default function PaginaPrincipal() {
           }
         }
         
+        // Si aún no hay rutConductor, intentar obtenerlo de cualquier pasajero del apoderado
+        if (!rutConductorParaRuta && rutUsuario) {
+          try {
+            const listaPasajerosRef = collection(db, 'lista_pasajeros');
+            const listaPasajerosQuery = query(
+              listaPasajerosRef,
+              where('rutApoderado', '==', rutUsuario.trim()),
+              limit(1)
+            );
+            const listaPasajerosSnap = await getDocs(listaPasajerosQuery);
+            if (!listaPasajerosSnap.empty) {
+              const pasajeroData = listaPasajerosSnap.docs[0].data();
+              rutConductorParaRuta = (pasajeroData.rutConductor || '').toString().trim();
+              if (rutConductorParaRuta && !rutConductor) {
+                setRutConductor(rutConductorParaRuta);
+              }
+            }
+          } catch (error) {
+            console.error('Error al obtener rutConductor desde lista_pasajeros:', error);
+          }
+        }
+        
         if (!rutConductorParaRuta) {
-          console.log('⚠️ No hay rutConductor disponible para obtener ruta activa');
           setRutaActiva(null);
           return;
         }
 
-        console.log('🔍 Configurando listener de ruta activa para conductor:', rutConductorParaRuta);
+        // Normalizar RUT del conductor para buscar la ruta activa
+        const rutConductorNormalizado = normalizarRut(rutConductorParaRuta);
+        
         const rutasActivasRef = collection(db, 'rutas_activas');
-        const rutaDocRef = doc(rutasActivasRef, rutConductorParaRuta);
+        // Intentar primero con RUT normalizado (como se guarda ahora)
+        const rutaDocRef = doc(rutasActivasRef, rutConductorNormalizado);
         
         unsubscribeRuta = onSnapshot(
           rutaDocRef,
           (snapshot) => {
-            console.log('📡 Snapshot de ruta activa recibido:', snapshot.exists());
             if (snapshot.exists()) {
               const data = snapshot.data();
-              console.log('📊 Datos de ruta activa:', {
-                activa: data.activa,
-                waypointsCount: data.waypoints?.length || 0,
-                tieneRouteGeometry: !!data.routeGeometry,
-              });
               
               if (data.activa === true && data.waypoints && data.waypoints.length > 0) {
-                // Verificar si el hijo seleccionado está en la ruta
-                if (hijoSeleccionado) {
-                  const hijoEnRuta = data.waypoints.some((w: any) => w.rutHijo === hijoSeleccionado.rut);
-                  console.log('👶 Hijo en ruta?', hijoEnRuta, 'RUT hijo:', hijoSeleccionado.rut);
-                  if (hijoEnRuta) {
-                    console.log('✅ Estableciendo ruta activa para apoderado');
-                    const nuevaRutaActiva = {
-                      waypoints: data.waypoints,
-                      routeGeometry: data.routeGeometry,
-                      distancia: data.distancia,
-                      tiempoEstimado: data.tiempoEstimado,
-                    };
-                    setRutaActiva(nuevaRutaActiva);
-                    // Actualizar hayRutaActiva inmediatamente cuando se establece la ruta
-                    setHayRutaActiva(true);
-                    console.log('✅ hayRutaActiva actualizado a true (ruta activa establecida)');
-                    return;
+                // SIEMPRE mostrar la ruta si está activa, independientemente de si el hijo está en la ruta
+                // Esto permite que el apoderado vea la ruta completa del conductor
+                
+                // Asegurarse de que routeGeometry esté en el formato correcto para Mapbox
+                let routeGeometryFinal = data.routeGeometry;
+                if (routeGeometryFinal && typeof routeGeometryFinal === 'object') {
+                  // Si routeGeometry es un Feature con geometry, extraer solo la geometry
+                  if (routeGeometryFinal.type === 'Feature' && routeGeometryFinal.geometry) {
+                    routeGeometryFinal = routeGeometryFinal.geometry;
                   }
-                } else {
-                  // Si no hay hijo seleccionado, establecer la ruta de todos modos
-                  console.log('✅ Estableciendo ruta activa (sin hijo seleccionado)');
-                  const nuevaRutaActiva = {
-                    waypoints: data.waypoints,
-                    routeGeometry: data.routeGeometry,
-                    distancia: data.distancia,
-                    tiempoEstimado: data.tiempoEstimado,
-                  };
-                  setRutaActiva(nuevaRutaActiva);
-                  // Actualizar hayRutaActiva inmediatamente cuando se establece la ruta
-                  setHayRutaActiva(true);
-                  console.log('✅ hayRutaActiva actualizado a true (ruta activa establecida sin hijo)');
-                  return;
                 }
+                
+                const nuevaRutaActiva = {
+                  waypoints: data.waypoints,
+                  routeGeometry: routeGeometryFinal,
+                  distancia: data.distancia,
+                  tiempoEstimado: data.tiempoEstimado,
+                };
+                
+                setRutaActiva(nuevaRutaActiva);
+                // Actualizar hayRutaActiva inmediatamente cuando se establece la ruta
+                setHayRutaActiva(true);
+                return;
+              }
+            } else {
+              // Si no existe con RUT normalizado, intentar con RUT original (compatibilidad)
+              if (rutConductorParaRuta !== rutConductorNormalizado) {
+                const rutaDocRefOriginal = doc(rutasActivasRef, rutConductorParaRuta);
+                getDoc(rutaDocRefOriginal).then((snapshotOriginal) => {
+                  if (snapshotOriginal.exists()) {
+                    const dataOriginal = snapshotOriginal.data();
+                    if (dataOriginal.activa === true && dataOriginal.waypoints && dataOriginal.waypoints.length > 0) {
+                      const nuevaRutaActiva = {
+                        waypoints: dataOriginal.waypoints,
+                        routeGeometry: dataOriginal.routeGeometry,
+                        distancia: dataOriginal.distancia,
+                        tiempoEstimado: dataOriginal.tiempoEstimado,
+                      };
+                      setRutaActiva(nuevaRutaActiva);
+                      setHayRutaActiva(true);
+                      return;
+                    }
+                  }
+                  setRutaActiva(null);
+                }).catch((error) => {
+                  console.error('Error al buscar ruta con RUT original:', error);
+                  setRutaActiva(null);
+                });
+              } else {
+                setRutaActiva(null);
               }
             }
-            console.log('❌ No hay ruta activa o no cumple condiciones');
-            setRutaActiva(null);
             // No cambiar hayRutaActiva a false aquí, ya que puede haber pasajeros con estado 'recogido'
             // El listener de ruta activa se encargará de actualizar esto
           },
@@ -578,13 +612,35 @@ export default function PaginaPrincipal() {
     };
 
     obtenerRutaActiva();
-
+    
     return () => {
       if (unsubscribeRuta) {
         unsubscribeRuta();
       }
     };
   }, [rutConductor, hijoSeleccionado, rutUsuario]);
+  
+  // Efecto adicional para forzar la obtención de ruta activa cuando cambia rutUsuario
+  useEffect(() => {
+    if (rutUsuario && !rutConductor) {
+      console.log('🔄 rutUsuario disponible pero no hay rutConductor, intentando obtener...');
+      // El listener de ruta activa se encargará de obtenerlo
+    }
+  }, [rutUsuario, rutConductor]);
+  
+  // Log cuando cambia rutaActiva para depuración
+  useEffect(() => {
+    if (rutaActiva) {
+      console.log('🔄 rutaActiva actualizada:', {
+        waypointsCount: rutaActiva.waypoints?.length || 0,
+        tieneRouteGeometry: !!rutaActiva.routeGeometry,
+        distancia: rutaActiva.distancia,
+        tiempoEstimado: rutaActiva.tiempoEstimado,
+      });
+    } else {
+      console.log('🔄 rutaActiva es null');
+    }
+  }, [rutaActiva]);
 
   // Listener para contar mensajes no leídos
   useEffect(() => {
@@ -1794,20 +1850,6 @@ export default function PaginaPrincipal() {
               driverLocation={ubicacionConductor}
               route={rutaActiva || undefined}
             />
-            {/* Debug: Mostrar información de la ruta activa */}
-            {__DEV__ && rutaActiva && (
-              <View style={{ position: 'absolute', top: 10, left: 10, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 4, zIndex: 1000 }}>
-                <Text style={{ color: '#fff', fontSize: 10 }}>
-                  Ruta activa: {rutaActiva.waypoints?.length || 0} waypoints
-                </Text>
-                <Text style={{ color: '#fff', fontSize: 10 }}>
-                  hayRutaActiva: {hayRutaActiva ? 'true' : 'false'}
-                </Text>
-                <Text style={{ color: '#fff', fontSize: 10 }}>
-                  estadoViajeHijo: {estadoViajeHijo || 'vacío'}
-                </Text>
-              </View>
-            )}
           </>
         ) : (
           <View style={styles.noUbicacionContainer}>
@@ -1837,9 +1879,35 @@ export default function PaginaPrincipal() {
                         // Marcar que el estado "entregado" fue confirmado con OK
                         estadoEntregadoConfirmadoRef.current = true;
                         
-                        // Resetear el estado del viaje a vacío después de presionar OK
                         try {
                           const listaPasajerosRef = collection(db, 'lista_pasajeros');
+                          
+                          // PRIMERO: Verificar si hay ruta activa ANTES de resetear
+                          let tieneRutaActiva = false;
+                          
+                          // Verificar si hay ruta activa guardada
+                          if (rutaActivaRef.current && rutaActivaRef.current.waypoints && rutaActivaRef.current.waypoints.length > 0) {
+                            tieneRutaActiva = true;
+                            console.log('✅ Ruta activa detectada (ruta guardada)');
+                          }
+                          
+                          // También verificar si hay otros pasajeros con estado 'recogido' o 'conductor en camino'
+                          const rutaActivaQuery = query(
+                            listaPasajerosRef,
+                            where('rutApoderado', '==', rutUsuario.trim())
+                          );
+                          const rutaActivaSnap = await getDocs(rutaActivaQuery);
+                          
+                          rutaActivaSnap.docs.forEach((docSnap) => {
+                            const data = docSnap.data();
+                            const estado = (data.estadoViaje || '').toString().trim().toLowerCase();
+                            if (estado === 'recogido' || estado === 'conductor en camino') {
+                              tieneRutaActiva = true;
+                              console.log('✅ Ruta activa detectada (pasajero con estado:', estado, ')');
+                            }
+                          });
+                          
+                          // Obtener el documento del hijo
                           const estadoQuery = query(
                             listaPasajerosRef,
                             where('rutHijo', '==', hijoSeleccionado.rut),
@@ -1847,39 +1915,28 @@ export default function PaginaPrincipal() {
                             limit(1)
                           );
                           const snapshot = await getDocs(estadoQuery);
+                          
                           if (!snapshot.empty) {
                             const docRef = doc(db, 'lista_pasajeros', snapshot.docs[0].id);
-                            await setDoc(docRef, { estadoViaje: '' }, { merge: true });
-                            setEstadoViajeHijo('');
-                            console.log('✅ Estado reseteado a vacío después de presionar OK');
                             
-                            // Verificar si hay ruta activa después del reset
-                            // Si no hay otros pasajeros con estado 'recogido', no hay ruta activa
-                            const rutaActivaQuery = query(
-                              listaPasajerosRef,
-                              where('rutApoderado', '==', rutUsuario.trim())
-                            );
-                            const rutaActivaSnap = await getDocs(rutaActivaQuery);
-                            let tieneRutaActiva = false;
-                            
-                            rutaActivaSnap.docs.forEach((docSnap) => {
-                              const data = docSnap.data();
-                              const estado = (data.estadoViaje || '').toString().trim().toLowerCase();
-                              if (estado === 'recogido') {
-                                tieneRutaActiva = true;
-                              }
-                            });
-                            
-                            // También verificar si hay ruta activa guardada
-                            if (rutaActivaRef.current && rutaActivaRef.current.waypoints && rutaActivaRef.current.waypoints.length > 0) {
-                              tieneRutaActiva = true;
+                            if (tieneRutaActiva) {
+                              // Si hay ruta activa, mantener el estado como "entregado" para que NO vuelva a aparecer
+                              // El conductor no debe verlo en la lista hasta que termine la ruta
+                              await setDoc(docRef, { estadoViaje: 'entregado' }, { merge: true });
+                              setEstadoViajeHijo('entregado');
+                              console.log('✅ Estado mantenido como "entregado" porque hay ruta activa - el niño NO volverá a aparecer');
+                            } else {
+                              // Si NO hay ruta activa, resetear a vacío para que pueda aparecer en la próxima ruta
+                              await setDoc(docRef, { estadoViaje: '' }, { merge: true });
+                              setEstadoViajeHijo('');
+                              console.log('✅ Estado reseteado a vacío - no hay ruta activa');
                             }
                             
                             setHayRutaActiva(tieneRutaActiva);
                           }
                         } catch (error) {
-                          console.error('Error al resetear estado:', error);
-                          Alert.alert('Error', 'No se pudo resetear el estado.');
+                          console.error('Error al procesar OK:', error);
+                          Alert.alert('Error', 'No se pudo procesar la confirmación.');
                         }
                       }}
                     >
@@ -1917,26 +1974,11 @@ export default function PaginaPrincipal() {
             </View>
             <ScrollView style={styles.tableBody} showsVerticalScrollIndicator={false}>
               {(() => {
-                // Función para formatear hora de 24h a 12h con AM/PM
+                // Función para formatear hora (mantener formato 24H)
                 const formatearHora = (hora24: string): string => {
                   if (!hora24 || hora24 === '-' || hora24.trim() === '') return '-';
-                  const partes = hora24.split(':');
-                  if (partes.length !== 2) return hora24; // Si no es formato HH:MM, retornar tal cual
-                  
-                  const horas = parseInt(partes[0], 10);
-                  const minutos = partes[1];
-                  
-                  if (isNaN(horas)) return hora24;
-                  
-                  if (horas === 0) {
-                    return `12:${minutos} AM`;
-                  } else if (horas === 12) {
-                    return `12:${minutos} PM`;
-                  } else if (horas < 12) {
-                    return `${horas}:${minutos} AM`;
-                  } else {
-                    return `${horas - 12}:${minutos} PM`;
-                  }
+                  // Retornar la hora tal cual en formato 24H (HH:MM)
+                  return hora24;
                 };
 
                 const diasSemana = [
@@ -1954,6 +1996,95 @@ export default function PaginaPrincipal() {
                   cantidadHorarios: horariosDisponibles.length,
                   horarios: horariosDisponibles,
                 });
+                
+                // Función para actualizar la asistencia de un día
+                const actualizarAsistenciaDia = async (hijoId: string, diaId: string, nuevoValor: boolean) => {
+                  try {
+                    const hijoRef = doc(db, 'Hijos', hijoId);
+                    const hijoSnap = await getDoc(hijoRef);
+                    
+                    if (!hijoSnap.exists()) {
+                      Alert.alert('Error', 'No se encontró el registro del niño.');
+                      return;
+                    }
+                    
+                    const hijoData = hijoSnap.data();
+                    const horarioActual: HorarioDia[] = Array.isArray(hijoData.horarioAsistencia)
+                      ? hijoData.horarioAsistencia
+                      : [];
+                    
+                    // Buscar el día en el horario actual
+                    const diaIndex = horarioActual.findIndex((dia) => {
+                      const idDia = (dia.id || '').toString().toLowerCase();
+                      const etiquetaDia = (dia.etiqueta || '').toString().toLowerCase();
+                      const diaIdLower = diaId.toLowerCase();
+                      const normalizarDia = (d: string) => d.replace(/[íi]/g, 'i').toLowerCase();
+                      
+                      return normalizarDia(idDia) === normalizarDia(diaIdLower) ||
+                             normalizarDia(etiquetaDia) === normalizarDia(diaIdLower);
+                    });
+                    
+                    let horarioActualizado: HorarioDia[];
+                    
+                    if (diaIndex >= 0) {
+                      // Actualizar el día existente
+                      horarioActualizado = [...horarioActual];
+                      horarioActualizado[diaIndex] = {
+                        ...horarioActualizado[diaIndex],
+                        asiste: nuevoValor,
+                      };
+                    } else {
+                      // Agregar un nuevo día al horario
+                      const diasNombres: Record<string, string> = {
+                        lunes: 'Lunes',
+                        martes: 'Martes',
+                        miercoles: 'Miércoles',
+                        jueves: 'Jueves',
+                        viernes: 'Viernes',
+                      };
+                      
+                      horarioActualizado = [
+                        ...horarioActual,
+                        {
+                          id: diaId,
+                          etiqueta: diasNombres[diaId] || diaId,
+                          asiste: nuevoValor,
+                          horaEntrada: '',
+                          horaSalida: '',
+                        },
+                      ];
+                    }
+                    
+                    // Actualizar en Firestore
+                    await updateDoc(hijoRef, {
+                      horarioAsistencia: horarioActualizado,
+                      actualizadoEn: serverTimestamp(),
+                    });
+                    
+                    // Actualizar el estado local
+                    setHijoSeleccionado((prev) => {
+                      if (!prev) return prev;
+                      return {
+                        ...prev,
+                        horarioAsistencia: horarioActualizado,
+                      };
+                    });
+                    
+                    // Actualizar también en la lista de hijos
+                    setHijos((prev) =>
+                      prev.map((hijo) =>
+                        hijo.id === hijoId
+                          ? { ...hijo, horarioAsistencia: horarioActualizado }
+                          : hijo
+                      )
+                    );
+                    
+                    console.log(`✅ Horario actualizado para ${diaId}: ${nuevoValor ? 'asiste' : 'no asiste'}`);
+                  } catch (error) {
+                    console.error('Error al actualizar asistencia:', error);
+                    Alert.alert('Error', 'No se pudo actualizar el horario.');
+                  }
+                };
                 
                 return diasSemana.map((diaSemana) => {
                   // Buscar el horario que coincida con este día
@@ -2004,7 +2135,11 @@ export default function PaginaPrincipal() {
                         <View style={styles.dayCell}>
                           <Checkbox
                             value={asiste}
-                            disabled={true}
+                            onValueChange={(nuevoValor) => {
+                              if (hijoSeleccionado) {
+                                actualizarAsistenciaDia(hijoSeleccionado.id, diaSemana.id, nuevoValor);
+                              }
+                            }}
                             color="#127067"
                             style={styles.checkbox}
                           />

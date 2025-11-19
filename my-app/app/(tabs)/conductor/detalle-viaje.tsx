@@ -7,6 +7,7 @@ import {
   TouchableHighlight,
   ActivityIndicator,
   Alert,
+  Image,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { doc, getDoc } from 'firebase/firestore';
@@ -32,10 +33,15 @@ interface Viaje {
   id: string;
   fechaViaje: any;
   fechaViajeFormateada: string;
+  fechaInicio?: any;
+  fechaInicioFormateada?: string;
+  fechaFin?: any;
+  fechaFinFormateada?: string;
   cantidadNinos: number;
   patenteFurgon: string;
   rutaGeometry?: any;
   waypoints?: Array<{ coordinates: { latitude: number; longitude: number }; name: string }>;
+  imagenRuta?: string | null; // URL de la imagen estática del mapa
   pasajeros: PasajeroHistorial[];
 }
 
@@ -66,14 +72,29 @@ export default function DetalleViajeScreen() {
         }
 
         const data = viajeSnap.data();
+        // Si rutaGeometry es un string JSON, parsearlo
+        let rutaGeometry = data.rutaGeometry;
+        if (typeof rutaGeometry === 'string') {
+          try {
+            rutaGeometry = JSON.parse(rutaGeometry);
+          } catch (e) {
+            console.warn('⚠️ Error al parsear rutaGeometry:', e);
+          }
+        }
+        
         setViaje({
           id: viajeSnap.id,
           fechaViaje: data.fechaViaje,
           fechaViajeFormateada: data.fechaViajeFormateada || 'Fecha no disponible',
+          fechaInicio: data.fechaInicio,
+          fechaInicioFormateada: data.fechaInicioFormateada,
+          fechaFin: data.fechaFin,
+          fechaFinFormateada: data.fechaFinFormateada,
           cantidadNinos: data.cantidadNinos || 0,
           patenteFurgon: data.patenteFurgon || 'Sin patente',
-          rutaGeometry: data.rutaGeometry,
+          rutaGeometry: rutaGeometry,
           waypoints: data.waypoints || [],
+          imagenRuta: data.imagenRuta || null,
           pasajeros: data.pasajeros || [],
         });
       } catch (error) {
@@ -88,7 +109,37 @@ export default function DetalleViajeScreen() {
     cargarViaje();
   }, [viajeId, router]);
 
-  const formatearFecha = (fecha: any) => {
+  // Función para convertir fecha formateada de 12H a 24H
+  const convertirFecha12Ha24H = (fechaFormateada: string): string => {
+    if (!fechaFormateada) return fechaFormateada;
+    
+    // Buscar patrones de fecha con hora 12H (ej: "18-11-2025, 11:02 p. m.")
+    const match = fechaFormateada.match(/(\d{2}-\d{2}-\d{4}),\s*(\d{1,2}):(\d{2})\s*(a\.?\s*m\.?|p\.?\s*m\.?)/i);
+    if (match) {
+      const fecha = match[1];
+      let horas = parseInt(match[2], 10);
+      const minutos = match[3];
+      const esPM = /p\.?\s*m\.?/i.test(match[4]);
+      
+      if (esPM && horas !== 12) {
+        horas += 12;
+      } else if (!esPM && horas === 12) {
+        horas = 0;
+      }
+      
+      return `${fecha}, ${horas.toString().padStart(2, '0')}:${minutos}`;
+    }
+    
+    // Si ya está en formato 24H o no tiene AM/PM, retornar tal cual
+    return fechaFormateada;
+  };
+
+  const formatearFecha = (fecha: any, fechaFormateadaGuardada?: string) => {
+    // Si hay una fecha formateada guardada, convertirla a 24H si es necesario
+    if (fechaFormateadaGuardada) {
+      return convertirFecha12Ha24H(fechaFormateadaGuardada);
+    }
+    
     if (!fecha) return 'Fecha no disponible';
     if (typeof fecha === 'string') return fecha;
     
@@ -100,16 +151,53 @@ export default function DetalleViajeScreen() {
         year: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
+        hour12: false, // Formato 24 horas
       });
     } catch {
       return 'Fecha no disponible';
     }
   };
 
+  // Función para convertir hora de 12H a 24H
+  const convertir12Ha24H = (hora12H: string): string => {
+    if (!hora12H) return hora12H;
+    
+    // Buscar patrones de hora 12H (ej: "11:02 p. m." o "10:58 a. m.")
+    const match12H = hora12H.match(/(\d{1,2}):(\d{2})\s*(a\.?\s*m\.?|p\.?\s*m\.?)/i);
+    if (match12H) {
+      let horas = parseInt(match12H[1], 10);
+      const minutos = match12H[2];
+      const esPM = /p\.?\s*m\.?/i.test(match12H[3]);
+      
+      if (esPM && horas !== 12) {
+        horas += 12;
+      } else if (!esPM && horas === 12) {
+        horas = 0;
+      }
+      
+      return `${horas.toString().padStart(2, '0')}:${minutos}`;
+    }
+    
+    // Si ya está en formato 24H o no tiene AM/PM, retornar tal cual
+    return hora12H;
+  };
+
   const formatearHora = (timestamp: any, horaFormateada?: string | null) => {
-    // Si ya hay una hora formateada guardada, usarla directamente
+    // Si hay una hora formateada guardada, convertirla a 24H si es necesario
     if (horaFormateada) {
-      return horaFormateada;
+      // Puede estar en formato completo (fecha y hora) o solo hora
+      const horaConvertida = convertir12Ha24H(horaFormateada);
+      // Si tiene formato completo (fecha y hora), extraer solo la hora
+      const matchCompleto = horaConvertida.match(/(\d{2}:\d{2}):\d{2}/);
+      if (matchCompleto) {
+        return matchCompleto[1]; // Retornar solo HH:MM
+      }
+      // Si tiene formato de fecha completa, extraer la hora
+      const matchFecha = horaConvertida.match(/(\d{2}:\d{2})/);
+      if (matchFecha) {
+        return matchFecha[1];
+      }
+      return horaConvertida;
     }
     
     // Si no, formatear desde el timestamp
@@ -123,6 +211,7 @@ export default function DetalleViajeScreen() {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
+        hour12: false, // Formato 24 horas
       });
     } catch {
       return 'N/A';
@@ -171,7 +260,7 @@ export default function DetalleViajeScreen() {
             <Ionicons name="calendar" size={20} color="#127067" />
             <View style={styles.infoTextContainer}>
               <Text style={styles.infoLabel}>Fecha y Hora</Text>
-              <Text style={styles.infoValue}>{formatearFecha(viaje.fechaViaje)}</Text>
+              <Text style={styles.infoValue}>{formatearFecha(viaje.fechaViaje, viaje.fechaViajeFormateada)}</Text>
             </View>
           </View>
           <View style={styles.infoRow}>
@@ -190,20 +279,30 @@ export default function DetalleViajeScreen() {
           </View>
         </View>
 
-        {/* Mapa de la ruta */}
-        {viaje.rutaGeometry && (
+        {/* Mapa de la ruta - Mostrar imagen estática si está disponible, sino mostrar mapa interactivo */}
+        {(viaje.imagenRuta || viaje.rutaGeometry) && (
           <View style={styles.mapCard}>
             <Text style={styles.sectionTitle}>Ruta del Viaje</Text>
-            <View style={styles.mapContainer}>
-              <MapboxDriver
-                accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
-                driverLocation={ubicacionPromedio}
-                route={{
-                  waypoints: viaje.waypoints || [],
-                  routeGeometry: viaje.rutaGeometry,
-                }}
-              />
-            </View>
+            {viaje.imagenRuta ? (
+              <View style={styles.mapContainer}>
+                <Image 
+                  source={{ uri: viaje.imagenRuta }} 
+                  style={styles.mapImage}
+                  resizeMode="cover"
+                />
+              </View>
+            ) : (
+              <View style={styles.mapContainer}>
+                <MapboxDriver
+                  accessToken={process.env.EXPO_PUBLIC_MAPBOX_TOKEN || ''}
+                  driverLocation={ubicacionPromedio}
+                  route={{
+                    waypoints: viaje.waypoints || [],
+                    routeGeometry: viaje.rutaGeometry,
+                  }}
+                />
+              </View>
+            )}
           </View>
         )}
 
@@ -347,6 +446,10 @@ const styles = StyleSheet.create({
     height: 200,
     borderRadius: 8,
     overflow: 'hidden',
+  },
+  mapImage: {
+    width: '100%',
+    height: '100%',
   },
   pasajerosCard: {
     backgroundColor: '#fff',

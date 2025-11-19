@@ -1540,6 +1540,7 @@ export default function ChatValidacion() {
                 {item.emisor === 'Sistema' ? 'Sistema' : ''} {item.emisor === 'Sistema' ? '• ' : ''}{new Date(item.fecha).toLocaleTimeString('es-CL', {
                   hour: '2-digit',
                   minute: '2-digit',
+                  hour12: false, // Formato 24 horas
                 })}
               </Text>
               {/* Indicadores de lectura tipo WhatsApp - solo para mensajes propios */}

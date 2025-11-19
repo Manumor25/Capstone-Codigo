@@ -31,14 +31,14 @@ const DIAS_SEMANA: HorarioDia[] = [
   { id: 'viernes', etiqueta: 'Viernes', asiste: false, horaEntrada: '', horaSalida: '' },
 ];
 
-// Función para generar opciones de horas desde 07:00 AM hasta 18:00 PM cada media hora
+// Función para generar opciones de horas desde 07:00 hasta 18:00 cada media hora
 const generarOpcionesHoras = (): Array<{ label: string; value: string }> => {
   const opciones: Array<{ label: string; value: string }> = [];
   
   // Agregar opción vacía
   opciones.push({ label: 'Seleccionar hora', value: '' });
   
-  // Generar horas desde las 7:00 AM (07:00) hasta las 6:00 PM (18:00)
+  // Generar horas desde las 7:00 (07:00) hasta las 18:00
   for (let hora = 7; hora <= 18; hora++) {
     // Para cada hora, generar :00 y :30
     for (let minuto = 0; minuto < 60; minuto += 30) {
@@ -52,16 +52,8 @@ const generarOpcionesHoras = (): Array<{ label: string; value: string }> => {
       const minutoStr = minuto.toString().padStart(2, '0');
       const valor = `${hora24}:${minutoStr}`;
       
-      // Formatear para mostrar en formato 12 horas con AM/PM
-      let hora12 = hora;
-      const periodo = hora >= 12 ? 'PM' : 'AM';
-      if (hora > 12) {
-        hora12 = hora - 12;
-      } else if (hora === 0) {
-        hora12 = 12;
-      }
-      
-      const label = `${hora12}:${minutoStr} ${periodo}`;
+      // Mostrar en formato 24 horas (HH:MM)
+      const label = `${hora24}:${minutoStr}`;
       opciones.push({ label, value: valor });
     }
   }

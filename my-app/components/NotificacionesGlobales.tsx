@@ -129,7 +129,9 @@ export default function NotificacionesGlobales({
       if (patentes.length === 0) {
         try {
           const listaPasajerosRef = collection(db, 'lista_pasajeros');
-          const pasajerosQuery = query(listaPasajerosRef, where('rutApoderado', '==', rut.trim()));
+          // Intentar buscar con RUT normalizado y también con RUT original (por si acaso)
+          const rutParaBuscar = normalizarRut(rut);
+          const pasajerosQuery = query(listaPasajerosRef, where('rutApoderado', '==', rutParaBuscar));
           const pasajerosSnapshot = await getDocs(pasajerosQuery);
           
           const patentesSet = new Set<string>();
@@ -147,9 +149,10 @@ export default function NotificacionesGlobales({
         }
       }
 
-      const rutNormalizado = rut.trim();
+      // Normalizar el RUT para la búsqueda (debe coincidir con cómo se guarda en las alertas)
+      const rutNormalizado = normalizarRut(rut);
       console.log('=== INICIANDO LISTENER DE NOTIFICACIONES GLOBALES ===');
-      console.log('RUT usuario:', rutNormalizado);
+      console.log('RUT usuario (normalizado):', rutNormalizado);
       console.log('RUT usuario (original):', rut);
       console.log('Patentes asignadas:', patentes);
       
@@ -165,37 +168,66 @@ export default function NotificacionesGlobales({
       }
 
       const alertasRef = collection(db, 'Alertas');
-      let alertasQuery;
+      
+      // Crear dos queries: una con RUT normalizado y otra con RUT original (por si hay alertas antiguas)
+      const rutOriginal = rut.trim();
+      let alertasQueryNormalizado;
+      let alertasQueryOriginal;
       
       try {
-        alertasQuery = query(
+        alertasQueryNormalizado = query(
           alertasRef,
           where('rutDestinatario', '==', rutNormalizado),
           orderBy('creadoEn', 'desc'),
           limit(50),
         );
+        // Solo crear query original si es diferente al normalizado
+        if (rutOriginal !== rutNormalizado) {
+          try {
+            alertasQueryOriginal = query(
+              alertasRef,
+              where('rutDestinatario', '==', rutOriginal),
+              orderBy('creadoEn', 'desc'),
+              limit(50),
+            );
+          } catch (errorOriginal) {
+            console.warn('Error al crear query original con orderBy:', errorOriginal);
+            alertasQueryOriginal = query(
+              alertasRef,
+              where('rutDestinatario', '==', rutOriginal),
+              limit(50),
+            );
+          }
+        }
       } catch (errorConsulta) {
-        console.warn('Error al crear query con orderBy, usando query simple:', errorConsulta);
-        alertasQuery = query(
+        console.warn('Error al crear query normalizado con orderBy, usando query simple:', errorConsulta);
+        alertasQueryNormalizado = query(
           alertasRef,
           where('rutDestinatario', '==', rutNormalizado),
           limit(50),
         );
+        if (rutOriginal !== rutNormalizado) {
+          alertasQueryOriginal = query(
+            alertasRef,
+            where('rutDestinatario', '==', rutOriginal),
+            limit(50),
+          );
+        }
       }
 
-      const unsubscribeAlertas = onSnapshot(
-        alertasQuery,
-        (snapshot) => {
-          console.log('📡 Snapshot recibido - Total documentos:', snapshot.docs.length);
-          console.log('📡 Buscando alertas para RUT:', rutNormalizado);
-          
-          const alertasMap = new Map<string, Alerta>();
+      // Map para combinar alertas de ambas queries
+      const alertasCombinadasMap = new Map<string, Alerta>();
+      
+      // Función para procesar snapshot y actualizar el mapa combinado
+      const procesarSnapshot = (snapshot: any, fuente: string) => {
+          console.log(`📡 Snapshot recibido (${fuente}) - Total documentos:`, snapshot.docs.length);
+          console.log(`📡 Buscando alertas para RUT: ${rutNormalizado} (${fuente})`);
           
           snapshot.docs.forEach((docSnap: any) => {
             const data = docSnap.data() || {};
             const rutDestinatarioEnAlerta = (data.rutDestinatario || '').toString().trim();
             
-            console.log(`📋 Alerta encontrada: ID=${docSnap.id}, Tipo="${data.tipo || data.tipoAlerta || 'N/A'}", RUT Destinatario="${rutDestinatarioEnAlerta}", RUT Buscado="${rutNormalizado}"`);
+            console.log(`📋 Alerta encontrada (${fuente}): ID=${docSnap.id}, Tipo="${data.tipo || data.tipoAlerta || 'N/A'}", RUT Destinatario="${rutDestinatarioEnAlerta}"`);
             
             const fecha =
               data.creadoEn && typeof data.creadoEn.toDate === 'function'
@@ -217,16 +249,18 @@ export default function NotificacionesGlobales({
             
             // Log para debug de alertas importantes
             const tipoNormalizado = (tipoAlertaRaw || '').toString().trim().toLowerCase();
-            if (tipoNormalizado === 'entregado' || tipoNormalizado === 'recogido' || tipoNormalizado === 'ruta generada') {
-              console.log(`📬 Alerta importante detectada: Tipo="${tipoAlertaRaw}", Normalizado="${tipoNormalizado}", Nombre="${data.nombreHijo || 'Sin nombre'}", RUT Dest="${rutDestinatarioEnAlerta}"`);
+            if (tipoNormalizado === 'conductor en camino' || tipoNormalizado === 'entregado' || tipoNormalizado === 'recogido' || tipoNormalizado === 'ruta generada') {
+              console.log(`📬 Alerta importante detectada (${fuente}): Tipo="${tipoAlertaRaw}", Normalizado="${tipoNormalizado}", Nombre="${data.nombreHijo || 'Sin nombre'}", RUT Dest="${rutDestinatarioEnAlerta}"`);
             }
             
-            if (!alertasMap.has(docSnap.id)) {
-              alertasMap.set(docSnap.id, alerta);
+            // Agregar al mapa combinado (evita duplicados por ID)
+            if (!alertasCombinadasMap.has(docSnap.id)) {
+              alertasCombinadasMap.set(docSnap.id, alerta);
             }
           });
           
-          const todasLasAlertas = Array.from(alertasMap.values());
+          // Procesar alertas combinadas
+          const todasLasAlertas = Array.from(alertasCombinadasMap.values());
 
           // Filtrar por patentes asignadas (si hay patentes)
           let listaAlertas: Alerta[] = [];
@@ -264,63 +298,90 @@ export default function NotificacionesGlobales({
             })
             .slice(0, 10);
 
-          // Si es la primera carga, guardar los IDs de las alertas existentes
-          // Pero solo después de un pequeño delay para permitir que las alertas nuevas se detecten
-          const esPrimeraCarga = alertasInicialesRef.current.size === 0;
+          // Detectar alertas que deben mostrarse como pop-up
+          // Incluir tanto alertas nuevas como alertas importantes que aún no se han mostrado
+          const alertasParaMostrar = alertasOrdenadas.filter(
+            (alerta) => {
+              // Si ya se mostró, no mostrar de nuevo
+              if (alertasMostradasEnPopUpRef.current.has(alerta.id)) {
+                return false;
+              }
+              
+              // Verificar si es una alerta importante que debe mostrarse
+              const tipoAlerta = (alerta.tipo || '').toString().trim().toLowerCase();
+              const esAlertaImportante = tipoAlerta === 'conductor en camino' ||
+                                        tipoAlerta === 'ruta generada' || 
+                                        tipoAlerta === 'recogido' || 
+                                        tipoAlerta === 'entregado';
+              
+              // Mostrar si es importante, incluso si es de la carga inicial
+              return esAlertaImportante;
+            }
+          );
+          
+          if (alertasParaMostrar.length > 0) {
+            console.log('🆕 Alertas importantes detectadas (se mostrarán como pop-up):', alertasParaMostrar.length);
+            alertasParaMostrar.forEach((alerta) => {
+              const tipoAlerta = (alerta.tipo || '').toString().trim().toLowerCase();
+              console.log(`🔔 Mostrando pop-up para alerta: ID=${alerta.id}, Tipo="${alerta.tipo}", Tipo normalizado="${tipoAlerta}"`);
+              
+              // Marcar como mostrada para no mostrarla de nuevo
+              alertasMostradasEnPopUpRef.current.add(alerta.id);
+              alertasInicialesRef.current.add(alerta.id);
+              
+              // Mostrar como pop-up
+              mostrarNotificacionPopUp(alerta);
+            });
+          } else {
+            console.log('ℹ️ No hay alertas importantes para mostrar en este snapshot');
+          }
+          
+          // Si es la primera carga, marcar las alertas no importantes como iniciales
+          // (las importantes ya se marcaron arriba)
+          const esPrimeraCarga = alertasInicialesRef.current.size === 0 || 
+                                 (alertasInicialesRef.current.size > 0 && alertasParaMostrar.length === 0);
           
           if (esPrimeraCarga && alertasOrdenadas.length > 0) {
-            // Usar setTimeout para dar tiempo a que las alertas nuevas se detecten primero
+            // Usar setTimeout para dar tiempo a que las alertas importantes se muestren primero
             setTimeout(() => {
               alertasOrdenadas.forEach((alerta) => {
+                // Solo marcar como inicial si no se ha mostrado como pop-up
                 if (!alertasMostradasEnPopUpRef.current.has(alerta.id)) {
                   alertasInicialesRef.current.add(alerta.id);
                 }
               });
               console.log('📋 Alertas iniciales guardadas:', alertasInicialesRef.current.size, 'alertas (no se mostrarán como pop-up)');
-            }, 1000); // Esperar 1 segundo antes de marcar como iniciales
+            }, 3000); // Esperar 3 segundos para dar tiempo a que las importantes se muestren
           }
-          
-          // Detectar alertas nuevas (que no estaban en la carga inicial o no se han mostrado)
-          // SOLO estas se mostrarán como pop-up
-          const nuevasAlertas = alertasOrdenadas.filter(
-            (alerta) => !alertasMostradasEnPopUpRef.current.has(alerta.id)
-          );
-          
-          if (nuevasAlertas.length > 0) {
-            console.log('🆕 Alertas nuevas detectadas (se mostrarán como pop-up):', nuevasAlertas.length);
-            nuevasAlertas.forEach((alerta) => {
-              // Mostrar alertas de Ruta Generada, Recogido y Entregado
-              const tipoAlerta = (alerta.tipo || '').toString().trim().toLowerCase();
-              console.log(`🔔 Verificando alerta nueva: ID=${alerta.id}, Tipo="${alerta.tipo}", Tipo normalizado="${tipoAlerta}"`);
-              
-              // Verificar si es una alerta que debe mostrarse como pop-up
-              const debeMostrar = tipoAlerta === 'ruta generada' || 
-                                 tipoAlerta === 'recogido' || 
-                                 tipoAlerta === 'entregado';
-              
-              if (debeMostrar) {
-                console.log(`✅ Mostrando pop-up para alerta: ${alerta.tipo} - ${alerta.nombreHijo || 'Sin nombre'}`);
-                // Marcar como mostrada para no mostrarla de nuevo
-                alertasMostradasEnPopUpRef.current.add(alerta.id);
-                alertasInicialesRef.current.add(alerta.id);
-                // Mostrar como pop-up
-                mostrarNotificacionPopUp(alerta);
-              } else {
-                console.log(`⚠️ Alerta no mostrada (tipo no es Ruta Generada/Recogido/Entregado): "${tipoAlerta}"`);
-                // Aún así marcarla como vista para no procesarla de nuevo
-                alertasMostradasEnPopUpRef.current.add(alerta.id);
-              }
-            });
-          } else {
-            console.log('ℹ️ No hay alertas nuevas en este snapshot');
-          }
-        },
+      };
+
+      // Crear listeners para ambas queries
+      const unsubscribeNormalizado = onSnapshot(
+        alertasQueryNormalizado,
+        (snapshot) => procesarSnapshot(snapshot, 'normalizado'),
         (error) => {
-          console.error('✗ Error en listener de notificaciones globales:', error);
+          console.error('✗ Error en listener de notificaciones (normalizado):', error);
         }
       );
 
-      return unsubscribeAlertas;
+      let unsubscribeOriginal: (() => void) | null = null;
+      if (alertasQueryOriginal) {
+        unsubscribeOriginal = onSnapshot(
+          alertasQueryOriginal,
+          (snapshot) => procesarSnapshot(snapshot, 'original'),
+          (error) => {
+            console.error('✗ Error en listener de notificaciones (original):', error);
+          }
+        );
+      }
+
+      // Retornar función para desuscribirse de ambos listeners
+      return () => {
+        unsubscribeNormalizado();
+        if (unsubscribeOriginal) {
+          unsubscribeOriginal();
+        }
+      };
     };
 
     let unsubscribe: (() => void) | null = null;
@@ -346,6 +407,7 @@ export default function NotificacionesGlobales({
       {notificacionesPopUp.map((notificacion, index) => {
         const tipoAlerta = notificacion.alerta.tipo.toLowerCase();
         const esUrgente = tipoAlerta === 'urgencia';
+        const esConductorEnCamino = tipoAlerta === 'conductor en camino';
         const esRutaGenerada = tipoAlerta === 'ruta generada';
         const esRecogido = tipoAlerta === 'recogido';
         const esEntregado = tipoAlerta === 'entregado';
@@ -365,7 +427,7 @@ export default function NotificacionesGlobales({
           textColor = '#fff';
           tipoTextColor = '#fff';
           iconName = 'alert-circle';
-        } else if (esRutaGenerada) {
+        } else if (esConductorEnCamino || esRutaGenerada) {
           backgroundColor = '#e6f7f5';
           borderColor = '#127067';
           iconColor = '#127067';

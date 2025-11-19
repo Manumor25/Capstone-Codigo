@@ -230,6 +230,7 @@ export default function ChatUrgenciaScreen() {
               {new Date(item.fecha).toLocaleTimeString('es-CL', {
                 hour: '2-digit',
                 minute: '2-digit',
+                hour12: false, // Formato 24 horas
               })}
             </Text>
           </View>

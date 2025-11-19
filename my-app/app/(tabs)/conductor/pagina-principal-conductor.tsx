@@ -4,7 +4,7 @@ import { makeShadow } from '@/utils/shadow';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Link, useRouter } from 'expo-router';
-import { collection, doc, getDocs, limit, onSnapshot, query, setDoc, where, serverTimestamp, getDoc, addDoc, deleteField } from 'firebase/firestore';
+import { collection, doc, getDocs, limit, onSnapshot, query, setDoc, where, serverTimestamp, getDoc, addDoc, deleteField, Timestamp } from 'firebase/firestore';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import * as Location from 'expo-location';
 import {
@@ -55,6 +55,8 @@ export default function PaginaPrincipalConductor() {
     routeGeometry?: any;
     distancia?: string;
     tiempoEstimado?: number;
+    fechaInicio?: Date;
+    fechaInicioFormateada?: string;
   } | null>(null);
   const [generandoRuta, setGenerandoRuta] = useState(false);
   useSyncRutActivo();
@@ -95,6 +97,72 @@ export default function PaginaPrincipalConductor() {
     return R * c; // Distancia en km
   };
 
+  // Función para obtener el nombre del día actual en español
+  const obtenerDiaActual = (): string => {
+    const dias = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+    const hoy = new Date();
+    return dias[hoy.getDay()];
+  };
+
+  // Función para verificar si un niño asiste hoy según su horario
+  const verificarAsistenciaHoy = async (rutHijo: string): Promise<boolean> => {
+    if (!rutHijo || rutHijo.trim() === '') {
+      console.log('    ⚠️ RUT de hijo vacío, se incluirá en la lista');
+      return true; // Si no hay RUT, incluir por defecto
+    }
+
+    try {
+      const diaActual = obtenerDiaActual();
+      console.log(`    📅 Verificando asistencia para ${rutHijo} - Día actual: ${diaActual}`);
+
+      // Buscar el hijo en la colección Hijos
+      const hijosRef = collection(db, 'Hijos');
+      const hijoQuery = query(hijosRef, where('rut', '==', rutHijo.trim()), limit(1));
+      const hijoSnapshot = await getDocs(hijoQuery);
+
+      if (hijoSnapshot.empty) {
+        console.log(`    ⚠️ No se encontró el hijo con RUT ${rutHijo}, se incluirá en la lista`);
+        return true; // Si no se encuentra, incluir por defecto
+      }
+
+      const hijoData = hijoSnapshot.docs[0].data();
+      const horarioAsistencia: any[] = Array.isArray(hijoData.horarioAsistencia)
+        ? hijoData.horarioAsistencia
+        : [];
+
+      if (horarioAsistencia.length === 0) {
+        console.log(`    ⚠️ No hay horario de asistencia para ${rutHijo}, se incluirá en la lista`);
+        return true; // Si no hay horario, incluir por defecto
+      }
+
+      // Buscar el día actual en el horario
+      const diaEncontrado = horarioAsistencia.find((dia) => {
+        const idDia = (dia.id || '').toString().toLowerCase();
+        const etiquetaDia = (dia.etiqueta || '').toString().toLowerCase();
+        const diaNormalizado = diaActual.toLowerCase();
+        
+        // Normalizar nombres de días (miércoles puede estar como "miercoles" o "miércoles")
+        const normalizarDia = (d: string) => d.replace(/[íi]/g, 'i').toLowerCase();
+        
+        return normalizarDia(idDia) === normalizarDia(diaNormalizado) ||
+               normalizarDia(etiquetaDia) === normalizarDia(diaNormalizado);
+      });
+
+      if (!diaEncontrado) {
+        console.log(`    ❌ No se encontró el día ${diaActual} en el horario de ${rutHijo}, NO asistirá hoy`);
+        return false;
+      }
+
+      const asiste = diaEncontrado.asiste === true;
+      console.log(`    ${asiste ? '✅' : '❌'} Día ${diaActual} ${asiste ? 'está marcado' : 'NO está marcado'} para ${rutHijo} - ${asiste ? 'SÍ asistirá' : 'NO asistirá'}`);
+      
+      return asiste;
+    } catch (error) {
+      console.error(`    ⚠️ Error al verificar asistencia para ${rutHijo}:`, error);
+      return true; // En caso de error, incluir por defecto para no bloquear
+    }
+  };
+
   // Función para procesar y ordenar pasajeros
   const procesarYOrdenarPasajeros = async (
     pasajerosSnapshot: any,
@@ -104,6 +172,8 @@ export default function PaginaPrincipalConductor() {
     const MAPBOX_TOKEN = 'pk.eyJ1IjoiYmFydG94IiwiYSI6ImNtaGpxaGZudzE4NHMycnB0bnMwdjVtbHIifQ.Makrf18R1Z9Wo4V-yMXUYw';
 
     console.log('🔄 Procesando pasajeros... Total en snapshot:', pasajerosSnapshot.docs.length);
+    const diaActual = obtenerDiaActual();
+    console.log(`📅 Día actual: ${diaActual}`);
 
     // Procesar cada pasajero
     for (const docSnap of pasajerosSnapshot.docs) {
@@ -124,6 +194,15 @@ export default function PaginaPrincipalConductor() {
       // sin necesidad de darse de baja y volver a inscribirse
       if (estadoViaje === 'entregado') {
         console.log(`    ❌ Filtrado (entregado): ${data.nombreHijo}`);
+        continue;
+      }
+
+      // Verificar si el niño asiste hoy según su horario
+      const rutHijo = (data.rutHijo || '').toString().trim();
+      const asisteHoy = await verificarAsistenciaHoy(rutHijo);
+      
+      if (!asisteHoy) {
+        console.log(`    ❌ Filtrado (no asiste hoy - ${diaActual}): ${data.nombreHijo}`);
         continue;
       }
       
@@ -1513,23 +1592,40 @@ export default function PaginaPrincipalConductor() {
         console.log(`✅ Ruta generada: ${distanciaTotal} km, ${tiempoEstimado} minutos`);
         console.log(`📍 Waypoints optimizados: ${waypoints.length} destinos`);
         
+        // Guardar fecha/hora de inicio de la ruta
+        const fechaInicioRuta = new Date();
+        const fechaInicioFormateada = fechaInicioRuta.toLocaleString('es-CL', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false, // Formato 24 horas
+        });
+        
         setRutaGenerada({
           waypoints,
           routeGeometry,
           distancia: distanciaTotal,
           tiempoEstimado: typeof tiempoEstimado === 'number' ? tiempoEstimado : undefined,
+          fechaInicio: fechaInicioRuta,
+          fechaInicioFormateada: fechaInicioFormateada,
         });
         
         // Guardar la ruta en la base de datos para que los apoderados puedan verla
         try {
           const rutGuardado = await AsyncStorage.getItem('rutUsuario');
           if (rutGuardado) {
+            // Normalizar RUT del conductor para consistencia
+            const rutConductorNormalizado = normalizarRut(rutGuardado);
+            
             // Guardar la ruta en una colección de rutas activas
+            // Usar RUT normalizado como ID del documento para consistencia
             const rutasActivasRef = collection(db, 'rutas_activas');
-            const rutaDocRef = doc(rutasActivasRef, rutGuardado);
+            const rutaDocRef = doc(rutasActivasRef, rutConductorNormalizado);
             
             await setDoc(rutaDocRef, {
-              rutConductor: rutGuardado,
+              rutConductor: rutConductorNormalizado, // Guardar normalizado
               waypoints: waypoints.map(w => ({
                 coordinates: w.coordinates,
                 name: w.name,
@@ -1542,85 +1638,127 @@ export default function PaginaPrincipalConductor() {
               activa: true,
             }, { merge: true });
             
+            console.log('✅ Ruta guardada en rutas_activas con RUT normalizado:', rutConductorNormalizado);
+            console.log('  - Documento ID:', rutConductorNormalizado);
+            console.log('  - Waypoints:', waypoints.length);
+            console.log('  - Tiene routeGeometry:', !!routeGeometry);
+            console.log('  - activa: true');
+            
             console.log('✅ Ruta guardada en base de datos:', {
               rutConductor: rutGuardado,
+              rutConductorNormalizado: rutConductorNormalizado,
               waypointsCount: waypoints.length,
               distancia: distanciaTotal,
               tiempoEstimado: typeof tiempoEstimado === 'number' ? tiempoEstimado : undefined,
             });
             
-            // Enviar notificaciones a todos los apoderados de los niños en la ruta
+            // Actualizar estado de todos los niños en la ruta a "conductor en camino"
+            // y enviar notificaciones a todos los apoderados
             const rutApoderados = new Set<string>();
             const nombresHijos = new Map<string, string>(); // rutApoderado -> nombreHijo
-            
-            for (const waypoint of waypoints) {
-              if (waypoint.rutHijo) {
-                // Buscar el apoderado de este hijo
-                const listaPasajerosRef = collection(db, 'lista_pasajeros');
-                const pasajeroQuery = query(
-                  listaPasajerosRef,
-                  where('rutHijo', '==', waypoint.rutHijo),
-                  where('rutConductor', '==', rutGuardado),
-                  limit(1)
-                );
-                const pasajeroSnap = await getDocs(pasajeroQuery);
-                
-                if (!pasajeroSnap.empty) {
-                  const pasajeroData = pasajeroSnap.docs[0].data();
-                  const rutApoderado = (pasajeroData.rutApoderado || '').toString().trim();
-                  const nombreHijo = pasajeroData.nombreHijo || waypoint.name.split(' - ')[0];
-                  
-                  if (rutApoderado) {
-                    rutApoderados.add(rutApoderado);
-                    nombresHijos.set(rutApoderado, nombreHijo);
-                  }
-                }
-              }
-            }
-            
-            // Crear notificaciones para cada apoderado
-            const alertasRef = collection(db, 'Alertas');
             const listaPasajerosRef = collection(db, 'lista_pasajeros');
             
-            for (const rutApoderado of rutApoderados) {
-              const nombreHijo = nombresHijos.get(rutApoderado) || 'tu hijo';
-              
-              // Buscar el rutHijo correspondiente a este apoderado
-              let rutHijoParaAlerta = '';
-              for (const waypoint of waypoints) {
-                if (waypoint.rutHijo) {
+            // Primero, actualizar el estado de todos los niños en la ruta
+            console.log('🔄 Actualizando estado de los niños a "conductor en camino"...');
+            for (const waypoint of waypoints) {
+              if (waypoint.rutHijo) {
+                try {
                   const pasajeroQuery = query(
                     listaPasajerosRef,
                     where('rutHijo', '==', waypoint.rutHijo),
-                    where('rutApoderado', '==', rutApoderado),
                     where('rutConductor', '==', rutGuardado),
                     limit(1)
                   );
                   const pasajeroSnap = await getDocs(pasajeroQuery);
+                  
                   if (!pasajeroSnap.empty) {
-                    rutHijoParaAlerta = waypoint.rutHijo;
-                    break;
+                    const pasajeroDoc = pasajeroSnap.docs[0];
+                    const pasajeroData = pasajeroDoc.data();
+                    const nombreHijo = pasajeroData.nombreHijo || waypoint.name.split(' - ')[0];
+                    const rutApoderado = (pasajeroData.rutApoderado || '').toString().trim();
+                    
+                    // Actualizar estado a "conductor en camino"
+                    await setDoc(
+                      doc(db, 'lista_pasajeros', pasajeroDoc.id),
+                      {
+                        estadoViaje: 'conductor en camino',
+                      },
+                      { merge: true }
+                    );
+                    
+                    console.log(`✅ Estado actualizado para ${nombreHijo}: "conductor en camino"`);
+                    
+                    // Agregar a la lista de apoderados para notificaciones
+                    if (rutApoderado) {
+                      rutApoderados.add(rutApoderado);
+                      nombresHijos.set(rutApoderado, nombreHijo);
+                    }
                   }
+                } catch (error) {
+                  console.error(`Error al actualizar estado para ${waypoint.rutHijo}:`, error);
+                }
+              }
+            }
+            
+            // Crear notificaciones para cada apoderado (en un try-catch separado para no fallar silenciosamente)
+            try {
+              const alertasRef = collection(db, 'Alertas');
+              console.log(`📤 Iniciando creación de notificaciones para ${rutApoderados.size} apoderado(s)...`);
+              
+              for (const rutApoderado of rutApoderados) {
+                try {
+                  const nombreHijo = nombresHijos.get(rutApoderado) || 'tu hijo';
+                  
+                  // Buscar el rutHijo correspondiente a este apoderado
+                  let rutHijoParaAlerta = '';
+                  for (const waypoint of waypoints) {
+                    if (waypoint.rutHijo) {
+                      const pasajeroQuery = query(
+                        listaPasajerosRef,
+                        where('rutHijo', '==', waypoint.rutHijo),
+                        where('rutApoderado', '==', rutApoderado),
+                        where('rutConductor', '==', rutGuardado),
+                        limit(1)
+                      );
+                      const pasajeroSnap = await getDocs(pasajeroQuery);
+                      if (!pasajeroSnap.empty) {
+                        rutHijoParaAlerta = waypoint.rutHijo;
+                        break;
+                      }
+                    }
+                  }
+                  
+                  // Normalizar el RUT del apoderado para asegurar coincidencia en la búsqueda
+                  const rutApoderadoNormalizado = normalizarRut(rutApoderado);
+                  
+                  console.log(`📝 Creando notificación para apoderado: RUT original="${rutApoderado}", RUT normalizado="${rutApoderadoNormalizado}", Hijo="${nombreHijo}"`);
+                  
+                  const docRef = await addDoc(alertasRef, {
+                    tipo: 'Conductor en camino',
+                    tipoAlerta: 'Conductor en camino',
+                    descripcion: `El conductor va en camino por ${nombreHijo}. Puedes ver la ruta en el mapa.`,
+                    rutDestinatario: rutApoderadoNormalizado,
+                    rutDestinatarioOriginal: rutApoderado, // Guardar también el original para referencia
+                    rutHijo: rutHijoParaAlerta,
+                    nombreHijo: nombreHijo,
+                    patenteFurgon: pasajerosActuales[0]?.patenteFurgon || '',
+                    creadoEn: serverTimestamp(),
+                    leida: false,
+                    rutaDestino: '/(tabs)/apoderado/pagina-principal-apoderado',
+                  });
+                  
+                  console.log(`✅ Notificación "Conductor en camino" creada con ID: ${docRef.id} para ${rutApoderado} (normalizado: ${rutApoderadoNormalizado}) - ${nombreHijo}`);
+                } catch (errorNotificacion) {
+                  console.error(`❌ Error al crear notificación para apoderado ${rutApoderado}:`, errorNotificacion);
+                  // Continuar con el siguiente apoderado aunque falle uno
                 }
               }
               
-              await addDoc(alertasRef, {
-                tipo: 'Ruta Generada',
-                tipoAlerta: 'Ruta Generada',
-                descripcion: `El conductor va en camino por ${nombreHijo}. Puedes ver la ruta en el mapa.`,
-                rutDestinatario: rutApoderado,
-                rutHijo: rutHijoParaAlerta,
-                nombreHijo: nombreHijo,
-                patenteFurgon: pasajerosActuales[0]?.patenteFurgon || '',
-                creadoEn: serverTimestamp(),
-                leida: false,
-                rutaDestino: '/(tabs)/apoderado/pagina-principal-apoderado',
-              });
-              
-              console.log(`✅ Notificación "Ruta Generada" enviada a ${rutApoderado} para ${nombreHijo}`);
+              console.log(`✅ Proceso de notificaciones completado. Total apoderados procesados: ${rutApoderados.size}`);
+            } catch (errorNotificaciones) {
+              console.error('❌ Error general al crear notificaciones:', errorNotificaciones);
+              // No bloquear el flujo principal si fallan las notificaciones
             }
-            
-            console.log(`✅ Notificaciones enviadas a ${rutApoderados.size} apoderado(s)`);
           }
         } catch (error) {
           console.error('Error al guardar ruta o enviar notificaciones:', error);
@@ -1673,10 +1811,29 @@ export default function PaginaPrincipalConductor() {
   // Función para terminar la ruta completamente y resetear estados
   const terminarRutaCompleta = async (historialYaGuardado: boolean = false) => {
     console.log('🛑 Terminando ruta completamente...');
+    console.log('  - historialYaGuardado:', historialYaGuardado);
+    
+    // IMPORTANTE: Guardar una copia de la ruta ANTES de resetear estados
+    const rutaParaHistorial = rutaGenerada;
+    
+    console.log('📋 Ruta para historial:', rutaParaHistorial ? 'existe' : 'null');
+    if (rutaParaHistorial) {
+      console.log('  - Waypoints:', rutaParaHistorial.waypoints?.length || 0);
+      console.log('  - Tiene routeGeometry:', !!rutaParaHistorial.routeGeometry);
+    }
     
     // Guardar historial de viaje ANTES de resetear estados (solo si no se guardó antes)
-    if (!historialYaGuardado) {
-      await guardarHistorialViaje();
+    if (!historialYaGuardado && rutaParaHistorial) {
+      console.log('📝 Guardando historial en terminarRutaCompleta...');
+      try {
+        await guardarHistorialViajeConRuta(rutaParaHistorial);
+        console.log('✅ Historial guardado exitosamente en terminarRutaCompleta');
+      } catch (error) {
+        console.error('❌ Error al guardar historial en terminarRutaCompleta:', error);
+        Alert.alert('Error', 'No se pudo guardar el historial. Por favor, intenta nuevamente.');
+      }
+    } else if (!historialYaGuardado) {
+      console.warn('⚠️ No se puede guardar historial: rutaParaHistorial es null');
     }
     
     // Primero resetear los estados de la ruta
@@ -1702,30 +1859,188 @@ export default function PaginaPrincipalConductor() {
     }
   };
 
-  // Función para guardar historial de viaje
-  const guardarHistorialViaje = async () => {
+  // Función para generar URL de imagen estática de Mapbox con la ruta
+  const generarImagenRuta = (waypoints: Array<{ coordinates: { latitude: number; longitude: number }; name: string }>, routeGeometry?: any): string | null => {
     try {
-      if (!rutaGenerada || !rutConductor) {
-        console.log('⚠️ No se puede guardar historial: falta ruta o RUT del conductor');
-        return;
+      const MAPBOX_TOKEN = 'pk.eyJ1IjoiYmFydG94IiwiYSI6ImNtaGpxaGZudzE4NHMycnB0bnMwdjVtbHIifQ.Makrf18R1Z9Wo4V-yMXUYw';
+      
+      if (!waypoints || waypoints.length === 0) {
+        return null;
       }
 
+      // Calcular el bounding box de todos los waypoints
+      const lats = waypoints.map(w => w.coordinates.latitude);
+      const lngs = waypoints.map(w => w.coordinates.longitude);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs);
+      const maxLng = Math.max(...lngs);
+
+      // Calcular el centro y el padding
+      const centerLat = (minLat + maxLat) / 2;
+      const centerLng = (minLng + maxLng) / 2;
+      const padding = 0.01; // Padding adicional para el bounding box
+
+      // Construir la URL de la imagen estática
+      // Formato: path-{strokeWidth}+{strokeColor}({encodedPolyline})|pin-s+{color}({lon},{lat})
+      let pathOverlay = '';
+      
+      // Si hay routeGeometry, usar las coordenadas de la ruta
+      if (routeGeometry && routeGeometry.geometry && routeGeometry.geometry.coordinates) {
+        const coordinates = routeGeometry.geometry.coordinates;
+        // Limitar el número de coordenadas para evitar URLs muy largas (máximo 100 puntos)
+        // Tomar puntos distribuidos uniformemente
+        const maxPoints = 100;
+        let sampledCoordinates = coordinates;
+        if (coordinates.length > maxPoints) {
+          const step = Math.ceil(coordinates.length / maxPoints);
+          sampledCoordinates = coordinates.filter((_: any, index: number) => index % step === 0 || index === coordinates.length - 1);
+        }
+        // Convertir coordenadas [lng, lat] a string para el path
+        // Usar color verde brillante (00ff00) para la línea de la ruta, ancho 6 para mejor visibilidad
+        const pathCoords = sampledCoordinates.map((coord: number[]) => `${coord[0]},${coord[1]}`).join(';');
+        pathOverlay = `path-6+00ff00(${pathCoords})`;
+      } else {
+        // Si no hay routeGeometry, dibujar línea recta entre waypoints
+        // Usar color verde brillante (00ff00) para la línea de la ruta, ancho 6
+        const pathCoords = waypoints.map(w => `${w.coordinates.longitude},${w.coordinates.latitude}`).join(';');
+        pathOverlay = `path-6+00ff00(${pathCoords})`;
+      }
+
+      // Agregar marcadores: círculo verde oscuro con "1" para inicio, ícono de bus para fin
+      const markers: string[] = [];
+      if (waypoints.length > 0) {
+        // Marcador de inicio: círculo verde oscuro con número "1" en blanco
+        const inicio = waypoints[0];
+        // Usar pin-l (large) con color verde oscuro (#006400 o 006400) y etiqueta "1" en blanco
+        markers.push(`pin-l-1+006400+ffffff(${inicio.coordinates.longitude},${inicio.coordinates.latitude})`);
+        
+        // Marcador de fin: ícono de bus (usar marcador con etiqueta "B" o similar, o color amarillo)
+        if (waypoints.length > 1) {
+          const fin = waypoints[waypoints.length - 1];
+          // Usar marcador amarillo (#ffd700 o ffd700) con etiqueta "B" para bus
+          markers.push(`pin-l-b+ffd700+000000(${fin.coordinates.longitude},${fin.coordinates.latitude})`);
+        }
+      }
+      const markersString = markers.join('|');
+
+      // Construir la URL completa
+      // Usar estilo light-v10 para un mapa más limpio y claro
+      const bbox = `${minLng - padding},${minLat - padding},${maxLng + padding},${maxLat + padding}`;
+      const overlayParts = [pathOverlay];
+      if (markersString) {
+        overlayParts.push(markersString);
+      }
+      const overlay = overlayParts.join('|');
+      const imageUrl = `https://api.mapbox.com/styles/v1/mapbox/light-v10/static/${overlay}/${centerLng},${centerLat},12,0/600x400@2x?access_token=${MAPBOX_TOKEN}`;
+      
+      console.log('🗺️ URL de imagen de ruta generada:', imageUrl.substring(0, 100) + '...');
+      return imageUrl;
+    } catch (error) {
+      console.error('Error al generar imagen de ruta:', error);
+      return null;
+    }
+  };
+
+  // Función para guardar historial de viaje (usa el estado actual de rutaGenerada)
+  const guardarHistorialViaje = async () => {
+    return guardarHistorialViajeConRuta(rutaGenerada);
+  };
+
+  // Función para guardar historial de viaje con una ruta específica
+  const guardarHistorialViajeConRuta = async (rutaParaGuardar: typeof rutaGenerada) => {
+    try {
+      console.log('📝 INICIANDO guardarHistorialViajeConRuta...');
+      console.log('  - rutaParaGuardar:', rutaParaGuardar ? 'existe' : 'null');
+      
+      // Obtener RUT del conductor desde AsyncStorage si no está disponible en el estado
+      let rutConductorParaGuardar = rutConductor;
+      if (!rutConductorParaGuardar) {
+        const rutGuardado = await AsyncStorage.getItem('rutUsuario');
+        if (rutGuardado) {
+          rutConductorParaGuardar = rutGuardado;
+          console.log('  - rutConductor obtenido desde AsyncStorage:', rutConductorParaGuardar);
+        }
+      } else {
+        console.log('  - rutConductor desde estado:', rutConductorParaGuardar);
+      }
+      
+      if (!rutaParaGuardar) {
+        console.error('❌ No se puede guardar historial: falta ruta');
+        console.error('  rutaParaGuardar:', rutaParaGuardar);
+        Alert.alert('Error', 'No se pudo guardar el historial. Falta información de la ruta.');
+        return;
+      }
+      
+      if (!rutConductorParaGuardar) {
+        console.error('❌ No se puede guardar historial: falta RUT del conductor');
+        console.error('  rutConductor:', rutConductorParaGuardar);
+        Alert.alert('Error', 'No se pudo guardar el historial. Falta información del conductor.');
+        return;
+      }
+      
+      console.log('✅ Validaciones pasadas - ruta y RUT disponibles');
+
       console.log('📝 Guardando historial de viaje...');
-      const ahora = new Date();
-      const fechaHora = ahora.toLocaleString('es-CL', {
+      console.log('  - Waypoints en ruta:', rutaParaGuardar.waypoints?.length || 0);
+      
+      // Fecha/hora de fin de la ruta (cuando se termina)
+      const fechaFinRuta = new Date();
+      const fechaFinFormateada = fechaFinRuta.toLocaleString('es-CL', {
         day: '2-digit',
         month: '2-digit',
         year: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
+        hour12: false, // Formato 24 horas
       });
+      
+      // Fecha/hora de inicio de la ruta (cuando se generó)
+      let fechaInicioRuta: Date | null = null;
+      let fechaInicioFormateada = fechaFinFormateada;
+      
+      if ((rutaParaGuardar as any).fechaInicio) {
+        fechaInicioRuta = (rutaParaGuardar as any).fechaInicio instanceof Date 
+          ? (rutaParaGuardar as any).fechaInicio 
+          : new Date((rutaParaGuardar as any).fechaInicio);
+        if (fechaInicioRuta) {
+          fechaInicioFormateada = (rutaParaGuardar as any).fechaInicioFormateada || fechaInicioRuta.toLocaleString('es-CL', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false, // Formato 24 horas
+          });
+        }
+      } else {
+        // Si no hay fecha de inicio guardada, usar la fecha de fin como fallback
+        fechaInicioRuta = fechaFinRuta;
+      }
+      
+      // Fecha/hora general del viaje (usar la de fin para ordenamiento)
+      const fechaHora = fechaFinFormateada;
 
       // Obtener información detallada de todos los pasajeros que estaban en la ruta
       // Usar los pasajeros del estado actual (que fueron incluidos en la ruta generada)
       // y también obtener sus datos actualizados de Firestore para tener los horarios
       const listaPasajerosRef = collection(db, 'lista_pasajeros');
-      const pasajerosQuery = query(listaPasajerosRef, where('rutConductor', '==', rutConductor));
-      const pasajerosSnapshot = await getDocs(pasajerosQuery);
+      
+      // Normalizar RUT del conductor para la búsqueda
+      const rutConductorNormalizadoParaBusqueda = normalizarRut(rutConductorParaGuardar);
+      
+      // Intentar buscar con RUT normalizado primero
+      let pasajerosQuery = query(listaPasajerosRef, where('rutConductor', '==', rutConductorNormalizadoParaBusqueda));
+      let pasajerosSnapshot = await getDocs(pasajerosQuery);
+      
+      // Si no encuentra pasajeros con RUT normalizado, intentar con RUT original
+      if (pasajerosSnapshot.empty && rutConductorParaGuardar !== rutConductorNormalizadoParaBusqueda) {
+        console.log('⚠️ No se encontraron pasajeros con RUT normalizado, intentando con RUT original...');
+        pasajerosQuery = query(listaPasajerosRef, where('rutConductor', '==', rutConductorParaGuardar));
+        pasajerosSnapshot = await getDocs(pasajerosQuery);
+      }
+      
+      console.log(`📋 Pasajeros encontrados para historial: ${pasajerosSnapshot.docs.length}`);
 
       const detallesPasajeros: Array<{
         rutHijo: string;
@@ -1747,7 +2062,7 @@ export default function PaginaPrincipalConductor() {
 
       // Obtener los RUTs de los hijos que estaban en la ruta generada
       const rutHijosEnRuta = new Set(
-        (rutaGenerada.waypoints || [])
+        (rutaParaGuardar.waypoints || [])
           .map(w => w.rutHijo)
           .filter(Boolean) as string[]
       );
@@ -1781,6 +2096,7 @@ export default function PaginaPrincipalConductor() {
                 hour: '2-digit',
                 minute: '2-digit',
                 second: '2-digit',
+                hour12: false, // Formato 24 horas
               });
             } catch (error) {
               console.error('Error al formatear fechaRecogido:', error);
@@ -1797,37 +2113,43 @@ export default function PaginaPrincipalConductor() {
                 hour: '2-digit',
                 minute: '2-digit',
                 second: '2-digit',
+                hour12: false, // Formato 24 horas
               });
             } catch (error) {
               console.error('Error al formatear fechaEntregado:', error);
             }
           }
           
+          // Normalizar RUT del apoderado para consistencia
+          const rutApoderadoOriginal = (data.rutApoderado || '').toString().trim();
+          const rutApoderadoNormalizado = normalizarRut(rutApoderadoOriginal);
+          
           const detallePasajero = {
             rutHijo: data.rutHijo || '',
             nombreHijo: data.nombreHijo || 'Sin nombre',
-            rutApoderado: (data.rutApoderado || '').toString().trim(),
+            rutApoderado: rutApoderadoNormalizado, // Guardar normalizado
             nombreApoderado: data.nombreApoderado || 'Sin apoderado',
             fechaRecogido: data.fechaRecogido || null,
             fechaEntregado: data.fechaEntregado || null,
-            horaRecogidoFormateada: horaRecogidoFormateada,
-            horaEntregadoFormateada: horaEntregadoFormateada,
+            horaRecogidoFormateada: horaRecogidoFormateada || null,
+            horaEntregadoFormateada: horaEntregadoFormateada || null,
             direccion: data.direccion || '',
-            coordenadas: data.coordenadas || undefined,
+            coordenadas: data.coordenadas || null, // Cambiar undefined a null
             patenteFurgon: data.patenteFurgon || '',
             estadoViaje: estadoViaje || '',
           };
           
           console.log(`📋 Pasajero en historial: ${detallePasajero.nombreHijo} - Recogido: ${horaRecogidoFormateada || 'N/A'}, Entregado: ${horaEntregadoFormateada || 'N/A'}`);
+          console.log(`  RUT Apoderado: ${rutApoderadoOriginal} -> ${rutApoderadoNormalizado}`);
 
           detallesPasajeros.push(detallePasajero);
 
-          // Agrupar por apoderado
-          if (detallePasajero.rutApoderado) {
-            if (!pasajerosPorApoderado[detallePasajero.rutApoderado]) {
-              pasajerosPorApoderado[detallePasajero.rutApoderado] = [];
+          // Agrupar por apoderado (usar RUT normalizado)
+          if (rutApoderadoNormalizado) {
+            if (!pasajerosPorApoderado[rutApoderadoNormalizado]) {
+              pasajerosPorApoderado[rutApoderadoNormalizado] = [];
             }
-            pasajerosPorApoderado[detallePasajero.rutApoderado].push(detallePasajero);
+            pasajerosPorApoderado[rutApoderadoNormalizado].push(detallePasajero);
           }
         }
       }
@@ -1840,55 +2162,136 @@ export default function PaginaPrincipalConductor() {
       // Obtener patente del furgón (usar la primera patente disponible de los pasajeros o del conductor)
       const patenteFurgon = detallesPasajeros[0]?.patenteFurgon || patentesConductor[0] || '';
 
+      // Generar imagen estática del mapa con la ruta
+      const imagenRuta = generarImagenRuta(rutaParaGuardar.waypoints || [], rutaParaGuardar.routeGeometry);
+      console.log('🗺️ Imagen de ruta generada:', imagenRuta ? 'Sí' : 'No');
+
+      // Normalizar RUT del conductor para consistencia
+      const rutConductorNormalizado = normalizarRut(rutConductorParaGuardar);
+      console.log(`📝 Guardando historial - RUT conductor: ${rutConductorParaGuardar} -> ${rutConductorNormalizado}`);
+
+      // Convertir routeGeometry a formato compatible con Firestore (sin arrays anidados)
+      // Siempre convertir a JSON string para evitar problemas con arrays anidados
+      let rutaGeometryParaGuardar: string | null = null;
+      if (rutaParaGuardar.routeGeometry) {
+        try {
+          // Siempre convertir a JSON string para evitar arrays anidados
+          rutaGeometryParaGuardar = JSON.stringify(rutaParaGuardar.routeGeometry);
+          console.log('✅ routeGeometry convertido a JSON string para evitar arrays anidados');
+        } catch (error) {
+          console.warn('⚠️ Error al convertir routeGeometry a JSON string:', error);
+          rutaGeometryParaGuardar = null;
+        }
+      }
+
+      // Convertir waypoints a formato compatible (asegurar que coordinates sea un objeto plano)
+      const waypointsParaGuardar = (rutaParaGuardar.waypoints || []).map(w => ({
+        coordinates: {
+          latitude: w.coordinates?.latitude || 0,
+          longitude: w.coordinates?.longitude || 0,
+        },
+        name: w.name || '',
+        rutHijo: w.rutHijo || '',
+      }));
+
       // Guardar historial para el conductor (con todos los pasajeros)
+      // Asegurar que todos los campos sean null en lugar de undefined
       const historialConductor = {
-        rutConductor,
-        patenteFurgon,
+        rutConductor: rutConductorNormalizado || '', // Guardar normalizado
+        patenteFurgon: patenteFurgon || '',
         fechaViaje: serverTimestamp(),
-        fechaViajeFormateada: fechaHora,
-        cantidadNinos: detallesPasajeros.length,
-        rutaGeometry: rutaGenerada.routeGeometry || null,
-        waypoints: rutaGenerada.waypoints || [],
-        pasajeros: detallesPasajeros,
+        fechaViajeFormateada: fechaHora || '',
+        fechaInicio: fechaInicioRuta ? Timestamp.fromDate(fechaInicioRuta) : serverTimestamp(),
+        fechaInicioFormateada: fechaInicioFormateada || '',
+        fechaFin: Timestamp.fromDate(fechaFinRuta),
+        fechaFinFormateada: fechaFinFormateada || '',
+        cantidadNinos: detallesPasajeros.length || 0,
+        rutaGeometry: rutaGeometryParaGuardar || null,
+        waypoints: waypointsParaGuardar || [],
+        imagenRuta: imagenRuta || null, // URL de la imagen estática del mapa
+        pasajeros: detallesPasajeros || [],
         tipoUsuario: 'conductor',
         creadoEn: serverTimestamp(),
       };
 
-      await addDoc(collection(db, 'historial_viajes'), historialConductor);
-      console.log('✅ Historial guardado para conductor con', detallesPasajeros.length, 'pasajeros');
-      detallesPasajeros.forEach(p => {
-        console.log(`  - ${p.nombreHijo}: Recogido ${p.horaRecogidoFormateada || 'N/A'}, Entregado ${p.horaEntregadoFormateada || 'N/A'}`);
+      console.log('📤 Intentando guardar historial del conductor...');
+      console.log('  - Datos a guardar:', {
+        rutConductor: rutConductorNormalizado,
+        cantidadNinos: detallesPasajeros.length,
+        tieneRutaGeometry: !!rutaGeometryParaGuardar,
+        tieneWaypoints: waypointsParaGuardar.length > 0,
+        tieneImagenRuta: !!imagenRuta,
+        tienePasajeros: detallesPasajeros.length > 0,
       });
+      
+      try {
+        const docRefConductor = await addDoc(collection(db, 'historial_viajes'), historialConductor);
+        console.log('✅ Historial guardado para conductor con', detallesPasajeros.length, 'pasajeros');
+        console.log('  📄 ID del documento:', docRefConductor.id);
+        console.log('  📄 RUT conductor guardado:', rutConductorNormalizado);
+        detallesPasajeros.forEach(p => {
+          console.log(`  - ${p.nombreHijo}: Recogido ${p.horaRecogidoFormateada || 'N/A'}, Entregado ${p.horaEntregadoFormateada || 'N/A'}`);
+        });
+      } catch (errorGuardarConductor) {
+        console.error('❌ ERROR al guardar historial del conductor:', errorGuardarConductor);
+        console.error('  - Error completo:', JSON.stringify(errorGuardarConductor, null, 2));
+        throw errorGuardarConductor; // Re-lanzar para que se capture arriba
+      }
 
       // Guardar historial para cada apoderado (solo con sus hijos)
       for (const [rutApoderado, pasajerosApoderado] of Object.entries(pasajerosPorApoderado)) {
         if (rutApoderado && pasajerosApoderado.length > 0) {
+          // Asegurar que todos los campos sean null en lugar de undefined
           const historialApoderado = {
-            rutConductor,
-            rutApoderado,
-            patenteFurgon,
+            rutConductor: rutConductorNormalizado || '', // Usar RUT normalizado
+            rutApoderado: rutApoderado || '', // Ya está normalizado desde antes
+            patenteFurgon: patenteFurgon || '',
             fechaViaje: serverTimestamp(),
-            fechaViajeFormateada: fechaHora,
-            cantidadNinos: pasajerosApoderado.length,
-            rutaGeometry: rutaGenerada.routeGeometry || null,
-            waypoints: rutaGenerada.waypoints || [],
-            pasajeros: pasajerosApoderado, // Solo los hijos de este apoderado
+            fechaViajeFormateada: fechaHora || '',
+            fechaInicio: fechaInicioRuta ? Timestamp.fromDate(fechaInicioRuta) : serverTimestamp(),
+            fechaInicioFormateada: fechaInicioFormateada || '',
+            fechaFin: Timestamp.fromDate(fechaFinRuta),
+            fechaFinFormateada: fechaFinFormateada || '',
+            cantidadNinos: pasajerosApoderado.length || 0,
+            rutaGeometry: rutaGeometryParaGuardar || null, // Usar la versión procesada
+            waypoints: waypointsParaGuardar || [], // Usar la versión procesada
+            imagenRuta: imagenRuta || null, // URL de la imagen estática del mapa
+            pasajeros: pasajerosApoderado || [], // Solo los hijos de este apoderado
             tipoUsuario: 'apoderado',
             creadoEn: serverTimestamp(),
           };
 
-          await addDoc(collection(db, 'historial_viajes'), historialApoderado);
-          console.log(`✅ Historial guardado para apoderado: ${rutApoderado} con ${pasajerosApoderado.length} hijo(s)`);
-          pasajerosApoderado.forEach(p => {
-            console.log(`  - ${p.nombreHijo}: Recogido ${p.horaRecogidoFormateada || 'N/A'}, Entregado ${p.horaEntregadoFormateada || 'N/A'}`);
-          });
+          console.log(`📤 Intentando guardar historial del apoderado: ${rutApoderado}...`);
+          try {
+            const docRefApoderado = await addDoc(collection(db, 'historial_viajes'), historialApoderado);
+            console.log(`✅ Historial guardado para apoderado: ${rutApoderado} con ${pasajerosApoderado.length} hijo(s)`);
+            console.log('  📄 ID del documento:', docRefApoderado.id);
+            console.log('  📄 RUT apoderado guardado:', rutApoderado);
+            pasajerosApoderado.forEach(p => {
+              console.log(`  - ${p.nombreHijo}: Recogido ${p.horaRecogidoFormateada || 'N/A'}, Entregado ${p.horaEntregadoFormateada || 'N/A'}`);
+            });
+          } catch (errorGuardarApoderado) {
+            console.error(`❌ ERROR al guardar historial del apoderado ${rutApoderado}:`, errorGuardarApoderado);
+            console.error('  - Error completo:', JSON.stringify(errorGuardarApoderado, null, 2));
+            // Continuar con los demás apoderados aunque uno falle
+          }
         }
       }
 
       console.log('✅ Historial de viaje guardado exitosamente');
+      console.log('  - Documentos guardados:');
+      console.log('    * Conductor: 1 documento');
+      console.log('    * Apoderados:', Object.keys(pasajerosPorApoderado).length, 'documentos');
+      console.log('  - Total pasajeros:', detallesPasajeros.length);
+      
+      // Mostrar alerta de éxito (se puede comentar si es molesto)
+      // Alert.alert('Éxito', `Historial de viaje guardado correctamente para ${detallesPasajeros.length} pasajero(s).`);
     } catch (error) {
       console.error('❌ Error al guardar historial de viaje:', error);
-      // No mostrar error al usuario, solo loguear
+      console.error('  - Stack:', error instanceof Error ? error.stack : 'N/A');
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+      Alert.alert('Error', `No se pudo guardar el historial de viaje: ${errorMessage}`);
+      throw error; // Re-lanzar el error para que el llamador sepa que falló
     }
   };
 
@@ -2007,9 +2410,16 @@ export default function PaginaPrincipalConductor() {
 
   const confirmarTerminarRuta = async () => {
     console.log('🛑 Confirmando terminar ruta...');
-    // Resetear estados inmediatamente
-    setRutaGenerada(null);
-    setGenerandoRuta(false);
+    // IMPORTANTE: Guardar una copia de la ruta ANTES de resetear estados
+    const rutaParaHistorial = rutaGenerada;
+    
+    console.log('📋 Ruta para historial:', rutaParaHistorial ? 'existe' : 'null');
+    if (rutaParaHistorial) {
+      console.log('  - Waypoints:', rutaParaHistorial.waypoints?.length || 0);
+      console.log('  - Tiene routeGeometry:', !!rutaParaHistorial.routeGeometry);
+    }
+    
+    // Cerrar el modal primero
     setModalTerminarRutaVisible(false);
     
     // Obtener todos los niños que no han sido entregados
@@ -2018,30 +2428,68 @@ export default function PaginaPrincipalConductor() {
       return estado !== 'entregado';
     });
     
-    // Enviar alertas a los padres y resetear estados
-    await terminarRutaConAlerta(ninosNoEntregados);
+    console.log('👶 Niños no entregados:', ninosNoEntregados.length);
+    
+    // Enviar alertas a los padres y resetear estados (pasar la ruta guardada)
+    try {
+      await terminarRutaConAlerta(ninosNoEntregados, rutaParaHistorial);
+      console.log('✅ terminarRutaConAlerta completado');
+    } catch (error) {
+      console.error('❌ Error en terminarRutaConAlerta:', error);
+      Alert.alert('Error', 'Hubo un problema al terminar la ruta. Por favor, intenta nuevamente.');
+    }
+    
+    // Resetear estados DESPUÉS de guardar el historial
+    setRutaGenerada(null);
+    setGenerandoRuta(false);
   };
 
-  const terminarRutaConAlerta = async (ninosAbordo: Pasajero[]) => {
+  const terminarRutaConAlerta = async (ninosAbordo: Pasajero[], rutaParaHistorial?: typeof rutaGenerada) => {
     try {
+      console.log('📝 terminarRutaConAlerta - Iniciando guardado de historial...');
+      console.log('  - rutaParaHistorial:', rutaParaHistorial ? 'existe' : 'null');
+      console.log('  - rutaGenerada (estado):', rutaGenerada ? 'existe' : 'null');
+      
       // Guardar historial de viaje ANTES de resetear estados
-      await guardarHistorialViaje();
+      // Usar la ruta pasada como parámetro si está disponible, sino usar el estado actual
+      if (rutaParaHistorial) {
+        console.log('📝 Guardando historial con ruta pasada como parámetro...');
+        await guardarHistorialViajeConRuta(rutaParaHistorial);
+        console.log('✅ Historial guardado con ruta pasada como parámetro');
+      } else if (rutaGenerada) {
+        console.log('📝 Guardando historial con ruta del estado...');
+        await guardarHistorialViaje();
+        console.log('✅ Historial guardado con ruta del estado');
+      } else {
+        console.error('❌ No hay ruta disponible para guardar historial');
+        Alert.alert('Advertencia', 'No se pudo guardar el historial porque no hay información de ruta disponible.');
+      }
 
       // Eliminar la ruta activa de la base de datos
       try {
         const rutGuardado = await AsyncStorage.getItem('rutUsuario');
         if (rutGuardado) {
+          const rutConductorNormalizado = normalizarRut(rutGuardado);
           const rutasActivasRef = collection(db, 'rutas_activas');
-          const rutaDocRef = doc(rutasActivasRef, rutGuardado);
+          // Usar RUT normalizado para marcar como inactiva
+          const rutaDocRef = doc(rutasActivasRef, rutConductorNormalizado);
           await setDoc(rutaDocRef, { activa: false }, { merge: true });
-          console.log('✅ Ruta activa marcada como inactiva en base de datos');
+          console.log('✅ Ruta activa marcada como inactiva en base de datos (RUT normalizado:', rutConductorNormalizado, ')');
+          
+          // También intentar con RUT original por compatibilidad
+          if (rutGuardado !== rutConductorNormalizado) {
+            try {
+              const rutaDocRefOriginal = doc(rutasActivasRef, rutGuardado);
+              await setDoc(rutaDocRefOriginal, { activa: false }, { merge: true });
+              console.log('✅ Ruta activa también marcada como inactiva con RUT original');
+            } catch (errorOriginal) {
+              console.warn('⚠️ No se pudo marcar ruta inactiva con RUT original (puede que no exista):', errorOriginal);
+            }
+          }
         }
       } catch (error) {
         console.error('Error al eliminar ruta activa:', error);
       }
-
-      // Terminar la ruta
-      setRutaGenerada(null);
 
       // Crear alertas para cada padre cuyo hijo esté a bordo
       for (const pasajero of ninosAbordo) {
@@ -2069,6 +2517,7 @@ export default function PaginaPrincipalConductor() {
                 year: 'numeric',
                 hour: '2-digit',
                 minute: '2-digit',
+                hour12: false, // Formato 24 horas
               });
 
               // Crear alerta para el apoderado
@@ -2096,18 +2545,7 @@ export default function PaginaPrincipalConductor() {
       // Resetear el estado de todos los pasajeros para que aparezcan en la próxima ruta
       await resetearEstadosPasajeros();
 
-      // Asegurarse de que la ruta esté completamente terminada
-      console.log('🛑 Reseteando estados de ruta después de terminar...');
-      setRutaGenerada(null);
-      setGenerandoRuta(false);
-      console.log('✅ Estados de ruta reseteados: rutaGenerada=null, generandoRuta=false');
-
-      // Verificación adicional después de un breve delay
-      setTimeout(() => {
-        setRutaGenerada(null);
-        setGenerandoRuta(false);
-        console.log('✅ Verificación final: Estados de ruta confirmados como reseteados');
-      }, 100);
+      console.log('✅ Historial guardado y estados de pasajeros reseteados');
 
       Alert.alert(
         'Ruta terminada',
@@ -2145,6 +2583,7 @@ export default function PaginaPrincipalConductor() {
           year: 'numeric',
           hour: '2-digit',
           minute: '2-digit',
+          hour12: false, // Formato 24 horas
         });
         
         // Formatear hora completa para guardar en historial
@@ -2155,6 +2594,7 @@ export default function PaginaPrincipalConductor() {
           hour: '2-digit',
           minute: '2-digit',
           second: '2-digit',
+          hour12: false, // Formato 24 horas
         });
         
         // Actualizar estado en lista_pasajeros con hora formateada
@@ -2230,6 +2670,7 @@ export default function PaginaPrincipalConductor() {
           year: 'numeric',
           hour: '2-digit',
           minute: '2-digit',
+          hour12: false, // Formato 24 horas
         });
         
         // Formatear hora completa para guardar en historial
@@ -2240,6 +2681,7 @@ export default function PaginaPrincipalConductor() {
           hour: '2-digit',
           minute: '2-digit',
           second: '2-digit',
+          hour12: false, // Formato 24 horas
         });
         
         // Actualizar estado en lista_pasajeros con hora formateada
@@ -2279,65 +2721,11 @@ export default function PaginaPrincipalConductor() {
           console.error('❌ No se pudo crear alerta: rutApoderado vacío');
         }
         
-        // Esperar un momento para que Firestore procese la actualización
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Mostrar mensaje de confirmación de entrega
+        Alert.alert('Entregado', `${siguienteNino.nombreHijo} ha sido marcado como entregado.`);
         
-        // Verificar si todos los niños están entregados (recargar datos actualizados)
-        const todosLosPasajerosQuery = query(
-          listaPasajerosRef,
-          where('rutConductor', '==', rutConductor)
-        );
-        const todosLosPasajerosSnap = await getDocs(todosLosPasajerosQuery);
-        
-        // Obtener los RUTs de los hijos que estaban en la ruta generada
-        const rutHijosEnRuta = new Set(
-          (rutaGenerada?.waypoints || [])
-            .map(w => w.rutHijo)
-            .filter(Boolean) as string[]
-        );
-        
-        // Si no hay waypoints con rutHijo, considerar todos los pasajeros
-        const incluirTodos = rutHijosEnRuta.size === 0;
-        
-        let todosEntregados = true;
-        let cantidadEnRuta = 0;
-        
-        for (const docSnap of todosLosPasajerosSnap.docs) {
-          const data = docSnap.data();
-          const rutHijo = (data.rutHijo || '').toString().trim();
-          const estadoViaje = (data.estadoViaje || '').toString().trim().toLowerCase();
-          
-          // Verificar si este pasajero estaba en la ruta
-          const estabaEnRuta = incluirTodos || rutHijosEnRuta.has(rutHijo);
-          
-          if (estabaEnRuta) {
-            cantidadEnRuta++;
-            if (estadoViaje !== 'entregado') {
-              todosEntregados = false;
-              break;
-            }
-          }
-        }
-        
-        console.log(`📊 Verificación de entrega: ${cantidadEnRuta} niños en ruta, todos entregados: ${todosEntregados}`);
-        
-        // Si todos los niños están entregados, guardar historial y terminar ruta
-        if (todosEntregados && cantidadEnRuta > 0 && rutaGenerada) {
-          console.log('✅ Todos los niños han sido entregados. Guardando historial y terminando ruta...');
-          
-          // Guardar historial de viaje
-          await guardarHistorialViaje();
-          
-          // Terminar la ruta automáticamente (indicar que el historial ya se guardó)
-          await terminarRutaCompleta(true);
-          
-          Alert.alert(
-            'Ruta completada',
-            `Todos los niños han sido entregados. El historial de la ruta ha sido guardado con los datos y horarios de recogida y entrega.`
-          );
-        } else {
-          Alert.alert('Entregado', `${siguienteNino.nombreHijo} ha sido marcado como entregado.`);
-        }
+        // Nota: La ruta NO se termina automáticamente cuando se entrega al último niño.
+        // El conductor debe presionar el botón "Terminar Ruta" manualmente cuando desee finalizar la ruta.
       } else {
         Alert.alert('Error', 'No se encontró el registro del pasajero.');
       }

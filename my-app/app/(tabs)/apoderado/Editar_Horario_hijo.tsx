@@ -45,14 +45,14 @@ const DIAS_SEMANA: HorarioDia[] = [
   { id: 'viernes', etiqueta: 'Viernes', asiste: false, horaEntrada: '', horaSalida: '' },
 ];
 
-// Función para generar opciones de horas desde 07:00 AM hasta 18:00 PM cada media hora
+// Función para generar opciones de horas desde 07:00 hasta 18:00 cada media hora
 const generarOpcionesHoras = (): Array<{ label: string; value: string }> => {
   const opciones: Array<{ label: string; value: string }> = [];
   
   // Agregar opción vacía
   opciones.push({ label: 'Seleccionar hora', value: '' });
   
-  // Generar horas desde las 7:00 AM (07:00) hasta las 6:00 PM (18:00)
+  // Generar horas desde las 7:00 (07:00) hasta las 18:00
   for (let hora = 7; hora <= 18; hora++) {
     // Para cada hora, generar :00 y :30
     for (let minuto = 0; minuto < 60; minuto += 30) {
@@ -66,16 +66,8 @@ const generarOpcionesHoras = (): Array<{ label: string; value: string }> => {
       const minutoStr = minuto.toString().padStart(2, '0');
       const valor = `${hora24}:${minutoStr}`;
       
-      // Formatear para mostrar en formato 12 horas con AM/PM
-      let hora12 = hora;
-      const periodo = hora >= 12 ? 'PM' : 'AM';
-      if (hora > 12) {
-        hora12 = hora - 12;
-      } else if (hora === 0) {
-        hora12 = 12;
-      }
-      
-      const label = `${hora12}:${minutoStr} ${periodo}`;
+      // Mostrar en formato 24 horas (HH:MM)
+      const label = `${hora24}:${minutoStr}`;
       opciones.push({ label, value: valor });
     }
   }
@@ -123,6 +115,33 @@ export default function EditarHorarioHijoScreen() {
           const horarioAsistencia: any[] = Array.isArray(data.horarioAsistencia)
             ? data.horarioAsistencia
             : [];
+          
+          // Función para convertir hora de 12H a 24H si es necesario
+          const convertirHoraSiNecesario = (hora: string): string => {
+            if (!hora || hora.trim() === '') return hora;
+            // Si ya está en formato 24H (HH:MM), retornar tal cual
+            if (/^\d{2}:\d{2}$/.test(hora.trim())) {
+              return hora.trim();
+            }
+            // Si está en formato 12H (ej: "7:30 AM" o "1:30 PM"), convertir
+            const match12H = hora.match(/(\d{1,2}):(\d{2})\s*(a\.?\s*m\.?|p\.?\s*m\.?)/i);
+            if (match12H) {
+              let horas = parseInt(match12H[1], 10);
+              const minutos = match12H[2];
+              const esPM = /p\.?\s*m\.?/i.test(match12H[3]);
+              
+              if (esPM && horas !== 12) {
+                horas += 12;
+              } else if (!esPM && horas === 12) {
+                horas = 0;
+              }
+              
+              return `${horas.toString().padStart(2, '0')}:${minutos}`;
+            }
+            // Si no coincide con ningún formato conocido, retornar tal cual
+            return hora;
+          };
+          
           base = base.map((dia) => {
             const encontrado =
               horarioAsistencia.find(
@@ -132,8 +151,8 @@ export default function EditarHorarioHijoScreen() {
             return {
               ...dia,
               asiste: Boolean(encontrado.asiste ?? encontrado.horaEntrada),
-              horaEntrada: encontrado.horaEntrada || '',
-              horaSalida: encontrado.horaSalida || '',
+              horaEntrada: convertirHoraSiNecesario(encontrado.horaEntrada || ''),
+              horaSalida: convertirHoraSiNecesario(encontrado.horaSalida || ''),
             };
           });
         }
