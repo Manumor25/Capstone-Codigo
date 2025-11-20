@@ -97,72 +97,6 @@ export default function PaginaPrincipalConductor() {
     return R * c; // Distancia en km
   };
 
-  // Función para obtener el nombre del día actual en español
-  const obtenerDiaActual = (): string => {
-    const dias = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
-    const hoy = new Date();
-    return dias[hoy.getDay()];
-  };
-
-  // Función para verificar si un niño asiste hoy según su horario
-  const verificarAsistenciaHoy = async (rutHijo: string): Promise<boolean> => {
-    if (!rutHijo || rutHijo.trim() === '') {
-      console.log('    ⚠️ RUT de hijo vacío, se incluirá en la lista');
-      return true; // Si no hay RUT, incluir por defecto
-    }
-
-    try {
-      const diaActual = obtenerDiaActual();
-      console.log(`    📅 Verificando asistencia para ${rutHijo} - Día actual: ${diaActual}`);
-
-      // Buscar el hijo en la colección Hijos
-      const hijosRef = collection(db, 'Hijos');
-      const hijoQuery = query(hijosRef, where('rut', '==', rutHijo.trim()), limit(1));
-      const hijoSnapshot = await getDocs(hijoQuery);
-
-      if (hijoSnapshot.empty) {
-        console.log(`    ⚠️ No se encontró el hijo con RUT ${rutHijo}, se incluirá en la lista`);
-        return true; // Si no se encuentra, incluir por defecto
-      }
-
-      const hijoData = hijoSnapshot.docs[0].data();
-      const horarioAsistencia: any[] = Array.isArray(hijoData.horarioAsistencia)
-        ? hijoData.horarioAsistencia
-        : [];
-
-      if (horarioAsistencia.length === 0) {
-        console.log(`    ⚠️ No hay horario de asistencia para ${rutHijo}, se incluirá en la lista`);
-        return true; // Si no hay horario, incluir por defecto
-      }
-
-      // Buscar el día actual en el horario
-      const diaEncontrado = horarioAsistencia.find((dia) => {
-        const idDia = (dia.id || '').toString().toLowerCase();
-        const etiquetaDia = (dia.etiqueta || '').toString().toLowerCase();
-        const diaNormalizado = diaActual.toLowerCase();
-        
-        // Normalizar nombres de días (miércoles puede estar como "miercoles" o "miércoles")
-        const normalizarDia = (d: string) => d.replace(/[íi]/g, 'i').toLowerCase();
-        
-        return normalizarDia(idDia) === normalizarDia(diaNormalizado) ||
-               normalizarDia(etiquetaDia) === normalizarDia(diaNormalizado);
-      });
-
-      if (!diaEncontrado) {
-        console.log(`    ❌ No se encontró el día ${diaActual} en el horario de ${rutHijo}, NO asistirá hoy`);
-        return false;
-      }
-
-      const asiste = diaEncontrado.asiste === true;
-      console.log(`    ${asiste ? '✅' : '❌'} Día ${diaActual} ${asiste ? 'está marcado' : 'NO está marcado'} para ${rutHijo} - ${asiste ? 'SÍ asistirá' : 'NO asistirá'}`);
-      
-      return asiste;
-    } catch (error) {
-      console.error(`    ⚠️ Error al verificar asistencia para ${rutHijo}:`, error);
-      return true; // En caso de error, incluir por defecto para no bloquear
-    }
-  };
-
   // Función para procesar y ordenar pasajeros
   const procesarYOrdenarPasajeros = async (
     pasajerosSnapshot: any,
@@ -172,8 +106,6 @@ export default function PaginaPrincipalConductor() {
     const MAPBOX_TOKEN = 'pk.eyJ1IjoiYmFydG94IiwiYSI6ImNtaGpxaGZudzE4NHMycnB0bnMwdjVtbHIifQ.Makrf18R1Z9Wo4V-yMXUYw';
 
     console.log('🔄 Procesando pasajeros... Total en snapshot:', pasajerosSnapshot.docs.length);
-    const diaActual = obtenerDiaActual();
-    console.log(`📅 Día actual: ${diaActual}`);
 
     // Procesar cada pasajero
     for (const docSnap of pasajerosSnapshot.docs) {
@@ -194,15 +126,6 @@ export default function PaginaPrincipalConductor() {
       // sin necesidad de darse de baja y volver a inscribirse
       if (estadoViaje === 'entregado') {
         console.log(`    ❌ Filtrado (entregado): ${data.nombreHijo}`);
-        continue;
-      }
-
-      // Verificar si el niño asiste hoy según su horario
-      const rutHijo = (data.rutHijo || '').toString().trim();
-      const asisteHoy = await verificarAsistenciaHoy(rutHijo);
-      
-      if (!asisteHoy) {
-        console.log(`    ❌ Filtrado (no asiste hoy - ${diaActual}): ${data.nombreHijo}`);
         continue;
       }
       
