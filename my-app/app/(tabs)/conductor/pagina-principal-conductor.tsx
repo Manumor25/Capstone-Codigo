@@ -10,6 +10,7 @@ import * as Location from 'expo-location';
 import {
   Alert,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -49,6 +50,8 @@ export default function PaginaPrincipalConductor() {
   const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0);
   const [modalAgregarHijoVisible, setModalAgregarHijoVisible] = useState(false);
   const [modalTerminarRutaVisible, setModalTerminarRutaVisible] = useState(false);
+  const [modalSeleccionarReceptorVisible, setModalSeleccionarReceptorVisible] = useState(false);
+  const [receptoresDisponibles, setReceptoresDisponibles] = useState<Array<{ rut: string; nombre: string; tipo: string }>>([]);
   const [alertaSeleccionada, setAlertaSeleccionada] = useState<any | null>(null);
   const [rutaGenerada, setRutaGenerada] = useState<{
     waypoints: Array<{ coordinates: { latitude: number; longitude: number }; name: string; rutHijo?: string }>;
@@ -2567,6 +2570,59 @@ export default function PaginaPrincipalConductor() {
     }
   };
 
+  const cargarReceptoresDisponibles = async (rutApoderado: string) => {
+    try {
+      const receptores: Array<{ rut: string; nombre: string; tipo: string }> = [];
+      
+      // Agregar el apoderado
+      try {
+        const apoderadoQuery = query(
+          collection(db, 'usuarios'),
+          where('rut', '==', rutApoderado),
+          limit(1)
+        );
+        const apoderadoSnap = await getDocs(apoderadoQuery);
+        if (!apoderadoSnap.empty) {
+          const apoderadoData = apoderadoSnap.docs[0].data();
+          const nombreApoderado = `${apoderadoData.nombres || ''} ${apoderadoData.apellidos || ''}`.trim() || 'Apoderado';
+          receptores.push({
+            rut: rutApoderado,
+            nombre: nombreApoderado,
+            tipo: 'Apoderado'
+          });
+        }
+      } catch (error) {
+        console.error('Error al cargar apoderado:', error);
+      }
+      
+      // Cargar tutores del apoderado
+      try {
+        const tutoresQuery = query(
+          collection(db, 'Tutores'),
+          where('rutUsuario', '==', rutApoderado)
+        );
+        const tutoresSnap = await getDocs(tutoresQuery);
+        tutoresSnap.forEach((doc) => {
+          const tutorData = doc.data();
+          const nombreTutor = `${tutorData.nombres || ''} ${tutorData.apellidos || ''}`.trim() || 'Tutor';
+          receptores.push({
+            rut: tutorData.rut || '',
+            nombre: nombreTutor,
+            tipo: 'Tutor'
+          });
+        });
+      } catch (error) {
+        console.error('Error al cargar tutores:', error);
+      }
+      
+      setReceptoresDisponibles(receptores);
+      return receptores;
+    } catch (error) {
+      console.error('Error al cargar receptores:', error);
+      return [];
+    }
+  };
+
   const handleDropOff = async () => {
     if (!siguienteNino) return;
     
@@ -2584,77 +2640,121 @@ export default function PaginaPrincipalConductor() {
       if (!pasajeroSnap.empty) {
         const pasajeroDoc = pasajeroSnap.docs[0];
         const pasajeroData = pasajeroDoc.data();
-        
-        // Obtener fecha y hora actual
-        const ahora = new Date();
-        const fechaHora = ahora.toLocaleString('es-CL', {
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false, // Formato 24 horas
-        });
-        
-        // Formatear hora completa para guardar en historial
-        const horaEntregadoFormateada = ahora.toLocaleString('es-CL', {
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-          hour12: false, // Formato 24 horas
-        });
-        
-        // Actualizar estado en lista_pasajeros con hora formateada
-        await setDoc(
-          doc(db, 'lista_pasajeros', pasajeroDoc.id),
-          {
-            estadoViaje: 'entregado',
-            fechaEntregado: serverTimestamp(),
-            horaEntregadoFormateada: horaEntregadoFormateada,
-          },
-          { merge: true }
-        );
-        
-        // Crear alerta para el apoderado con nombre del hijo, fecha y hora
         const rutApoderado = (pasajeroData.rutApoderado || '').toString().trim();
-        if (rutApoderado) {
-          console.log('📤 Creando alerta de Entregado:', {
-            rutApoderado,
-            nombreHijo: siguienteNino.nombreHijo,
-            patenteFurgon: pasajeroData.patenteFurgon,
-          });
-          // Crear alerta SOLO para el apoderado (el conductor no necesita notificación de su propia acción)
-          await addDoc(collection(db, 'Alertas'), {
-            tipo: 'Entregado',
-            tipoAlerta: 'Entregado',
-            descripcion: `${siguienteNino.nombreHijo} ha sido entregado el ${fechaHora}`,
-            rutDestinatario: rutApoderado,
-            rutHijo: siguienteNino.rutHijo,
-            nombreHijo: siguienteNino.nombreHijo,
-            patenteFurgon: pasajeroData.patenteFurgon || '',
-            fechaHoraEntrega: fechaHora,
-            creadoEn: serverTimestamp(),
-            leida: false,
-          });
-          console.log('✅ Alerta de Entregado creada para apoderado');
-        } else {
-          console.error('❌ No se pudo crear alerta: rutApoderado vacío');
+        
+        if (!rutApoderado) {
+          Alert.alert('Error', 'No se encontró el RUT del apoderado.');
+          return;
         }
         
-        // Mostrar mensaje de confirmación de entrega
-        Alert.alert('Entregado', `${siguienteNino.nombreHijo} ha sido marcado como entregado.`);
+        // Cargar receptores disponibles (apoderado + tutores)
+        const receptores = await cargarReceptoresDisponibles(rutApoderado);
         
-        // Nota: La ruta NO se termina automáticamente cuando se entrega al último niño.
-        // El conductor debe presionar el botón "Terminar Ruta" manualmente cuando desee finalizar la ruta.
+        if (receptores.length === 0) {
+          Alert.alert('Error', 'No se encontraron receptores disponibles.');
+          return;
+        }
+        
+        // Si solo hay un receptor, entregar directamente
+        if (receptores.length === 1) {
+          await confirmarEntrega(receptores[0], pasajeroDoc.id, pasajeroData);
+        } else {
+          // Mostrar modal para seleccionar receptor
+          setModalSeleccionarReceptorVisible(true);
+        }
       } else {
         Alert.alert('Error', 'No se encontró el registro del pasajero.');
       }
     } catch (error) {
-      console.error('Error al marcar como entregado:', error);
-      Alert.alert('Error', 'No se pudo actualizar el estado.');
+      console.error('Error al preparar entrega:', error);
+      Alert.alert('Error', 'No se pudo preparar la entrega.');
+    }
+  };
+
+  const confirmarEntrega = async (
+    receptor: { rut: string; nombre: string; tipo: string },
+    pasajeroDocId: string,
+    pasajeroData: any
+  ) => {
+    if (!siguienteNino) {
+      Alert.alert('Error', 'No hay niño seleccionado.');
+      return;
+    }
+    
+    try {
+      // Obtener fecha y hora actual
+      const ahora = new Date();
+      const fechaHora = ahora.toLocaleString('es-CL', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      
+      // Formatear hora completa para guardar en historial
+      const horaEntregadoFormateada = ahora.toLocaleString('es-CL', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      });
+      
+      // Actualizar estado en lista_pasajeros
+      await setDoc(
+        doc(db, 'lista_pasajeros', pasajeroDocId),
+        {
+          estadoViaje: 'entregado',
+          fechaEntregado: serverTimestamp(),
+          horaEntregadoFormateada: horaEntregadoFormateada,
+          receptorEntrega: receptor.nombre,
+          rutReceptorEntrega: receptor.rut,
+          tipoReceptorEntrega: receptor.tipo,
+        },
+        { merge: true }
+      );
+      
+      // Crear alerta para el receptor
+      console.log('📤 Creando alerta de Entregado:', {
+        rutReceptor: receptor.rut,
+        nombreReceptor: receptor.nombre,
+        tipoReceptor: receptor.tipo,
+        nombreHijo: siguienteNino.nombreHijo,
+        patenteFurgon: pasajeroData.patenteFurgon,
+      });
+      
+      await addDoc(collection(db, 'Alertas'), {
+        tipo: 'Entregado',
+        tipoAlerta: 'Entregado',
+        descripcion: `${siguienteNino.nombreHijo} ha sido entregado a ${receptor.nombre} (${receptor.tipo}) el ${fechaHora}`,
+        rutDestinatario: receptor.rut,
+        rutHijo: siguienteNino.rutHijo,
+        nombreHijo: siguienteNino.nombreHijo,
+        patenteFurgon: pasajeroData.patenteFurgon || '',
+        fechaHoraEntrega: fechaHora,
+        receptorEntrega: receptor.nombre,
+        tipoReceptorEntrega: receptor.tipo,
+        creadoEn: serverTimestamp(),
+        leida: false,
+      });
+      
+      console.log('✅ Alerta de Entregado creada para', receptor.tipo);
+      
+      // Cerrar modal si está abierto
+      setModalSeleccionarReceptorVisible(false);
+      
+      // Mostrar mensaje de confirmación
+      Alert.alert(
+        'Entregado',
+        `${siguienteNino.nombreHijo} ha sido entregado a ${receptor.nombre} (${receptor.tipo}).`
+      );
+    } catch (error) {
+      console.error('Error al confirmar entrega:', error);
+      Alert.alert('Error', 'No se pudo confirmar la entrega.');
     }
   };
 
@@ -3142,6 +3242,36 @@ export default function PaginaPrincipalConductor() {
           driverLocation={ubicacionActual || undefined}
           route={rutaGenerada || undefined}
         />
+        
+        {/* Overlays de información de ruta para Android */}
+        {Platform.OS === 'android' && rutaGenerada && siguienteNino && (
+          <>
+            {/* Overlay superior: Dirección */}
+            {siguienteNino.direccion && (
+              <View style={styles.mapOverlayTop}>
+                <Text style={styles.mapOverlayText} numberOfLines={2}>
+                  {siguienteNino.direccion}
+                </Text>
+              </View>
+            )}
+            
+            {/* Overlay inferior: Tiempo y Distancia */}
+            {rutaGenerada.distancia && rutaGenerada.tiempoEstimado && (
+              <View style={styles.mapOverlayBottom}>
+                <Text style={styles.mapOverlayTimeDistance}>
+                  {(() => {
+                    const horas = Math.floor(rutaGenerada.tiempoEstimado / 60);
+                    const minutos = rutaGenerada.tiempoEstimado % 60;
+                    const tiempoFormateado = horas > 0 
+                      ? `${horas}h.${minutos.toString().padStart(2, '0')}m`
+                      : `${minutos}m`;
+                    return `${tiempoFormateado} · ${rutaGenerada.distancia} km`;
+                  })()}
+                </Text>
+              </View>
+            )}
+          </>
+        )}
       </View>
 
       {/* Panel de control blanco */}
@@ -3212,6 +3342,84 @@ export default function PaginaPrincipalConductor() {
         </View>
 
       </View>
+      
+      {/* Modal para seleccionar receptor */}
+      <Modal
+        visible={modalSeleccionarReceptorVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setModalSeleccionarReceptorVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Seleccionar Receptor</Text>
+              <Pressable onPress={() => setModalSeleccionarReceptorVisible(false)}>
+                <Ionicons name="close" size={28} color="#127067" />
+              </Pressable>
+            </View>
+            <Text style={styles.modalSubtitle}>
+              ¿A quién se entrega {siguienteNino?.nombreHijo}?
+            </Text>
+            <ScrollView style={styles.receptoresList}>
+              {receptoresDisponibles.length === 0 ? (
+                <View style={styles.emptyReceptoresContainer}>
+                  <Text style={styles.emptyReceptoresText}>Cargando receptores...</Text>
+                </View>
+              ) : (
+                receptoresDisponibles.map((receptor, index) => (
+                  <TouchableHighlight
+                    key={index}
+                    style={styles.receptorItem}
+                    underlayColor="#E6F7F5"
+                    onPress={async () => {
+                      if (!siguienteNino) {
+                        Alert.alert('Error', 'No hay niño seleccionado.');
+                        return;
+                      }
+                      try {
+                        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+                        const pasajeroQuery = query(
+                          listaPasajerosRef,
+                          where('rutHijo', '==', siguienteNino.rutHijo),
+                          where('rutConductor', '==', rutConductor),
+                          limit(1)
+                        );
+                        const pasajeroSnap = await getDocs(pasajeroQuery);
+                        if (!pasajeroSnap.empty) {
+                          const pasajeroDoc = pasajeroSnap.docs[0];
+                          const pasajeroData = pasajeroDoc.data();
+                          await confirmarEntrega(receptor, pasajeroDoc.id, pasajeroData);
+                        } else {
+                          Alert.alert('Error', 'No se encontró el registro del pasajero.');
+                        }
+                      } catch (error) {
+                        console.error('Error al seleccionar receptor:', error);
+                        Alert.alert('Error', 'No se pudo procesar la selección.');
+                      }
+                    }}
+                  >
+                    <View style={styles.receptorContent}>
+                      <View style={styles.receptorIconContainer}>
+                        <Ionicons 
+                          name={receptor.tipo === 'Apoderado' ? 'person' : 'people'} 
+                          size={24} 
+                          color="#127067" 
+                        />
+                      </View>
+                      <View style={styles.receptorInfo}>
+                        <Text style={styles.receptorNombre}>{receptor.nombre}</Text>
+                        <Text style={styles.receptorTipo}>{receptor.tipo}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color="#999" />
+                    </View>
+                  </TouchableHighlight>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
       
       {/* Notificaciones globales para el conductor */}
       <NotificacionesGlobales 
@@ -3421,6 +3629,48 @@ const styles = StyleSheet.create({
   alertasScrollContent: {
     paddingBottom: 4,
   },
+  mapOverlayTop: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    right: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    padding: 12,
+    ...makeShadow('0 2px 8px rgba(0,0,0,0.15)', {
+      shadowColor: '#000000',
+      shadowOpacity: 0.1,
+      shadowRadius: 4,
+      shadowOffset: { width: 0, height: 2 },
+    }),
+    elevation: 4,
+    maxWidth: '90%',
+  },
+  mapOverlayText: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
+  },
+  mapOverlayBottom: {
+    position: 'absolute',
+    bottom: 100,
+    left: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    padding: 10,
+    ...makeShadow('0 2px 8px rgba(0,0,0,0.15)', {
+      shadowColor: '#000000',
+      shadowOpacity: 0.1,
+      shadowRadius: 4,
+      shadowOffset: { width: 0, height: 2 },
+    }),
+    elevation: 4,
+  },
+  mapOverlayTimeDistance: {
+    fontSize: 14,
+    color: '#127067',
+    fontWeight: '600',
+  },
   mapaContainer: {
     flex: 1,
     margin: 20,
@@ -3618,18 +3868,16 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
+    justifyContent: 'flex-end',
   },
   modalContent: {
     backgroundColor: '#fff',
-    borderRadius: 15,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     padding: 20,
-    width: '100%',
-    maxWidth: 400,
+    maxHeight: '80%',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.3,
     shadowRadius: 10,
     elevation: 10,
@@ -3723,5 +3971,56 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  modalSubtitle: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 20,
+  },
+  receptoresList: {
+    maxHeight: 400,
+  },
+  receptorItem: {
+    backgroundColor: '#F5F7F8',
+    borderRadius: 12,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  receptorContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+  },
+  receptorIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#E6F7F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  receptorInfo: {
+    flex: 1,
+  },
+  receptorNombre: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1A1A1A',
+    marginBottom: 4,
+  },
+  receptorTipo: {
+    fontSize: 14,
+    color: '#666',
+  },
+  emptyReceptoresContainer: {
+    padding: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyReceptoresText: {
+    fontSize: 14,
+    color: '#999',
+    fontStyle: 'italic',
   },
 });

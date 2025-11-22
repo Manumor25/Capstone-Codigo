@@ -11,6 +11,8 @@ import {
   Alert,
   Modal,
   Pressable,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -54,6 +56,7 @@ export default function ChatValidacion() {
   const flatListRef = useRef<FlatList>(null);
   const [mensajesEliminados, setMensajesEliminados] = useState<Set<string>>(new Set());
   const redireccionApoderadoRef = useRef(false);
+  const estadoInicialPostulacionRef = useRef<string | null>(null);
 
   const idPostulacion = params.idPostulacion as string;
   const esAgregarHijo = params.accion === 'agregar_hijo' || params.tipoAlerta === 'AgregarHijo';
@@ -339,61 +342,8 @@ export default function ChatValidacion() {
             });
           });
           
-          // Verificar si hay un mensaje del sistema indicando que la postulación fue aprobada
-          // y redirigir al apoderado si es necesario
-          const mensajeAprobacion = lista.find((msg: any) => 
-            msg.emisor === 'Sistema' && 
-            msg.receptor === rut &&
-            (msg.texto?.toLowerCase().includes('aprobada') || msg.texto?.toLowerCase().includes('aprobado'))
-          );
-          
-          if (mensajeAprobacion && !redireccionApoderadoRef.current) {
-            // Verificar que el usuario es apoderado
-            const rolGuardado = (await AsyncStorage.getItem('userRole')) || (await AsyncStorage.getItem('rolUsuario')) || '';
-            const rolActual = rolGuardado.toLowerCase();
-            
-            console.log('🔍 Mensaje de aprobación encontrado:', { 
-              mensaje: mensajeAprobacion.texto, 
-              rol: rolActual,
-              redireccionProgramada: redireccionApoderadoRef.current,
-              receptor: mensajeAprobacion.receptor,
-              rutUsuario: rut
-            });
-            
-            // Verificar que es apoderado (ya está en minúscula por el toLowerCase())
-            if (rolActual === 'apoderado') {
-              console.log('✓ Mensaje de aprobación detectado, redirigiendo apoderado inmediatamente...');
-              redireccionApoderadoRef.current = true;
-              
-              // También verificar el estado de la postulación directamente
-              try {
-                const postRef = doc(db, 'Postulaciones', idPostulacion);
-                const postSnap = await getDoc(postRef);
-                if (postSnap.exists()) {
-                  const postData = postSnap.data() as any;
-                  const estado = (postData.estado || '').toString().toLowerCase();
-                  console.log('📋 Estado de postulación verificado:', estado);
-                  
-                  if (estado === 'aceptada') {
-                    console.log('✅ Confirmado: Postulación está aceptada, redirigiendo...');
-                    // Redirigir inmediatamente
-                    router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-                    return; // Salir temprano para evitar procesar más
-                  }
-                }
-              } catch (error) {
-                console.error('Error al verificar estado de postulación:', error);
-              }
-              
-              // Si no se pudo verificar el estado, redirigir de todas formas por el mensaje
-              setTimeout(() => {
-                router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-              }, 100);
-              return; // Salir temprano para evitar procesar más
-            } else {
-              console.log('⚠ Rol no es apoderado:', rolActual);
-            }
-          }
+          // Nota: Se removió la redirección automática cuando se detecta mensaje de aprobación
+          // para permitir que el apoderado pueda seguir chateando normalmente
           
           setMensajes(lista);
           
@@ -511,34 +461,12 @@ export default function ChatValidacion() {
 
         const postRef = doc(db, 'Postulaciones', idPostulacion);
         
-        // Verificar estado inicial
+        // Guardar el estado inicial para comparar cambios
         const postSnapInicial = await getDoc(postRef);
         if (postSnapInicial.exists()) {
           const postDataInicial = postSnapInicial.data() as any;
-          const estadoInicial = (postDataInicial.estado || '').toString().toLowerCase();
-          const rutPostulacionInicial = (postDataInicial.rutUsuario || '').toString().trim();
-          
-          const normalizarRut = (rut: string) => rut.replace(/[^0-9kK]/g, '').toUpperCase();
-          const rutGuardadoNormalizado = normalizarRut(rutGuardado);
-          const rutPostulacionNormalizado = normalizarRut(rutPostulacionInicial);
-          
-          console.log('📋 Estado inicial de postulación:', { 
-            estado: estadoInicial, 
-            rutPostulacion: rutPostulacionInicial,
-            rutGuardado,
-            coincide: rutGuardadoNormalizado === rutPostulacionNormalizado
-          });
-          
-          // Si ya está aceptada, redirigir inmediatamente
-          if (estadoInicial === 'aceptada' && rutGuardadoNormalizado === rutPostulacionNormalizado && !redireccionApoderadoRef.current) {
-            redireccionApoderadoRef.current = true;
-            console.log('✓ Postulación ya está aceptada al cargar, redirigiendo apoderado...');
-            // Usar setTimeout con 0 para asegurar que se ejecute después del render
-            setTimeout(() => {
-              router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-            }, 100);
-            return;
-          }
+          estadoInicialPostulacionRef.current = (postDataInicial.estado || '').toString().toLowerCase();
+          console.log('📋 Estado inicial de postulación:', estadoInicialPostulacionRef.current);
         }
         
         unsubscribePostulacion = onSnapshot(postRef, async (snapshot) => {
@@ -551,10 +479,17 @@ export default function ChatValidacion() {
           const estado = (postData.estado || '').toString().toLowerCase();
           const rutPostulacion = (postData.rutUsuario || '').toString().trim();
           
-          console.log('📡 Cambio detectado en postulación:', { estado, rutPostulacion });
+          console.log('📡 Cambio detectado en postulación:', { 
+            estado, 
+            estadoInicial: estadoInicialPostulacionRef.current, 
+            rutPostulacion 
+          });
           
-          // Si la postulación fue aceptada y el usuario es el apoderado, redirigir
-          if (estado === 'aceptada' && !redireccionApoderadoRef.current) {
+          // Solo redirigir si la postulación cambió de estado a "aceptada" (no si ya estaba aceptada)
+          // Esto evita redirigir cuando el apoderado simplemente abre un chat de una postulación ya aceptada
+          if (estado === 'aceptada' && 
+              estadoInicialPostulacionRef.current !== 'aceptada' && 
+              !redireccionApoderadoRef.current) {
             // Verificar que el apoderado es el dueño de la postulación
             const rutActual = await AsyncStorage.getItem('rutUsuario');
             if (!rutActual) {
@@ -575,7 +510,7 @@ export default function ChatValidacion() {
             
             if (rutActualNormalizado === rutPostulacionNormalizado) {
               redireccionApoderadoRef.current = true;
-              console.log('✓ Postulación aceptada detectada en listener, redirigiendo apoderado...');
+              console.log('✓ Postulación aceptada detectada en listener (cambio de estado), redirigiendo apoderado...');
               // Usar setTimeout con 0 para asegurar que se ejecute después del render
               setTimeout(() => {
                 router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
@@ -583,6 +518,11 @@ export default function ChatValidacion() {
             } else {
               console.log('⚠ RUTs no coinciden, no se redirigirá');
             }
+          }
+          
+          // Actualizar estado inicial solo la primera vez que cambia (para detectar cambios futuros)
+          if (estadoInicialPostulacionRef.current === null) {
+            estadoInicialPostulacionRef.current = estado;
           }
         }, (error) => {
           console.error('❌ Error en listener de postulación:', error);
@@ -598,75 +538,19 @@ export default function ChatValidacion() {
       if (unsubscribePostulacion) {
         unsubscribePostulacion();
       }
-      // Resetear el flag cuando se desmonta el componente
+      // Resetear los flags cuando se desmonta el componente
       redireccionApoderadoRef.current = false;
+      estadoInicialPostulacionRef.current = null;
     };
   }, [idPostulacion, router]);
 
-  // Verificar estado de postulación cuando la pantalla está enfocada y periódicamente
+  // Verificar estado de postulación cuando la pantalla está enfocada
+  // Nota: Se removió la verificación periódica que redirigía cuando la postulación ya estaba aceptada
+  // para permitir que el apoderado pueda abrir y ver chats de postulaciones ya aceptadas
   useFocusEffect(
     useCallback(() => {
-      const verificarEstadoPostulacion = async () => {
-        if (!idPostulacion || redireccionApoderadoRef.current) {
-          return;
-        }
-
-        try {
-          const rutGuardado = await AsyncStorage.getItem('rutUsuario');
-          const rolGuardado = (await AsyncStorage.getItem('userRole')) || (await AsyncStorage.getItem('rolUsuario')) || '';
-          const rol = rolGuardado.toLowerCase();
-
-          console.log('🔍 useFocusEffect - Verificando estado:', { idPostulacion, rutGuardado, rol });
-
-          // Solo verificar si es apoderado (puede estar en minúscula o con mayúscula inicial)
-          if (rol !== 'apoderado') {
-            console.log('⚠ useFocusEffect - No es apoderado, saliendo');
-            return;
-          }
-
-          const postRef = doc(db, 'Postulaciones', idPostulacion);
-          const postSnap = await getDoc(postRef);
-          
-          if (postSnap.exists()) {
-            const postData = postSnap.data() as any;
-            const estado = (postData.estado || '').toString().toLowerCase();
-            const rutPostulacion = (postData.rutUsuario || '').toString().trim();
-            
-            const normalizarRut = (rut: string) => rut.replace(/[^0-9kK]/g, '').toUpperCase();
-            const rutGuardadoNormalizado = normalizarRut(rutGuardado || '');
-            const rutPostulacionNormalizado = normalizarRut(rutPostulacion);
-            
-            console.log('📋 useFocusEffect - Estado de postulación:', { 
-              estado, 
-              rutGuardado: rutGuardadoNormalizado,
-              rutPostulacion: rutPostulacionNormalizado,
-              coinciden: rutGuardadoNormalizado === rutPostulacionNormalizado
-            });
-            
-            if (estado === 'aceptada' && rutGuardadoNormalizado === rutPostulacionNormalizado) {
-              console.log('✅ useFocusEffect - Postulación aceptada detectada, redirigiendo...');
-              redireccionApoderadoRef.current = true;
-              router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-            }
-          } else {
-            console.log('⚠ useFocusEffect - Postulación no existe');
-          }
-        } catch (error) {
-          console.error('❌ Error al verificar estado en useFocusEffect:', error);
-        }
-      };
-
       // Marcar que el chat está visible
       chatVisibleRef.current = true;
-      
-      verificarEstadoPostulacion();
-      
-      // Verificar periódicamente cada 2 segundos mientras la pantalla está enfocada
-      const intervalId = setInterval(() => {
-        if (!redireccionApoderadoRef.current) {
-          verificarEstadoPostulacion();
-        }
-      }, 2000);
 
       // Esperar un momento para asegurar que el usuario está viendo el chat
       const timeoutId = setTimeout(async () => {
@@ -698,7 +582,6 @@ export default function ChatValidacion() {
       }, 1000); // Esperar 1 segundo después de que el chat esté visible
       
       return () => {
-        clearInterval(intervalId);
         clearTimeout(timeoutId);
         chatVisibleRef.current = false;
       };
@@ -1452,8 +1335,13 @@ export default function ChatValidacion() {
   }, [mensajesFiltrados.length]);
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
+    <KeyboardAvoidingView 
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'android' ? 0 : 0}
+    >
+      <View style={styles.container}>
+        <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={handleSalirChat} activeOpacity={0.7}>
           <Ionicons name="arrow-back" size={26} color="#fff" />
         </TouchableOpacity>
@@ -1576,7 +1464,12 @@ export default function ChatValidacion() {
           value={mensaje}
           onChangeText={setMensaje}
           placeholder="Escribe un mensaje..."
+          placeholderTextColor="#999"
           editable={autorizado}
+          multiline={false}
+          returnKeyType="send"
+          onSubmitEditing={enviarMensaje}
+          blurOnSubmit={false}
         />
         <TouchableHighlight style={styles.sendButton} onPress={enviarMensaje} underlayColor="#0c5c4e" disabled={!autorizado}>
           <Ionicons name="send" size={24} color="#fff" />
@@ -1593,7 +1486,8 @@ export default function ChatValidacion() {
           </TouchableHighlight>
         </View>
       )}
-    </View>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 const styles = StyleSheet.create({

@@ -118,8 +118,8 @@ export default function AgregarFurgonScreen() {
       modelo: !modelo ? 'Ingresa el modelo del vehículo' : '',
       ano: !ano ? 'Ingresa el año del vehículo' : '',
       cupos: !cupos ? 'Ingresa la cantidad de cupos' : 
-             isNaN(cuposNumero) || cuposNumero < 1 || cuposNumero > 20 
-             ? 'Los cupos deben ser un número entre 1 y 20' : '',
+             isNaN(cuposNumero) || cuposNumero < 1 || cuposNumero > 30 
+             ? 'Los cupos deben ser un número entre 1 y 30' : '',
       fotoFurgon: !fotoSeleccionada ? 'Debes cargar una foto del furgón.' : '',
     };
 
@@ -218,7 +218,7 @@ export default function AgregarFurgonScreen() {
 
           <TextInput
             style={styles.input}
-            placeholder="Cupos disponibles (1-20)"
+            placeholder="Cupos disponibles (1-30)"
             placeholderTextColor="#127067"
             value={cupos}
             onChangeText={setCupos}

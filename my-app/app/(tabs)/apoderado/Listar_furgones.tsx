@@ -298,6 +298,7 @@ export default function ListaFurgonesScreen() {
   };
 
   const confirmarModal = async () => {
+    // Prevenir múltiples ejecuciones
     if (isConfirmingRef.current) {
       return;
     }
@@ -311,18 +312,18 @@ export default function ListaFurgonesScreen() {
       return;
     }
     
+    // Cerrar el modal inmediatamente
     setModalVisible(false);
     modalCallbackRef.current = null;
     
-    setTimeout(async () => {
-      try {
-        await callback();
-      } catch (error) {
-        console.error('Error al ejecutar callback del modal:', error);
-      } finally {
-        isConfirmingRef.current = false;
-      }
-    }, 200);
+    // Ejecutar el callback inmediatamente sin delay
+    try {
+      await callback();
+    } catch (error) {
+      console.error('Error al ejecutar callback del modal:', error);
+    } finally {
+      isConfirmingRef.current = false;
+    }
   };
 
   const handleDarseDeBaja = async () => {
@@ -694,9 +695,7 @@ export default function ListaFurgonesScreen() {
             <TouchableHighlight
               style={[styles.unsubscribeButton, dandoseDeBaja && styles.unsubscribeButtonDisabled]}
               underlayColor="#b71c1c"
-              onPress={(e) => {
-                e?.stopPropagation();
-                console.log('Botón Darse de baja presionado');
+              onPress={() => {
                 if (!dandoseDeBaja && inscripcionesActuales.length > 0) {
                   handleDarseDeBaja();
                 }
@@ -742,10 +741,7 @@ export default function ListaFurgonesScreen() {
       >
         <Pressable 
           style={styles.modalOverlay}
-          onPress={(e) => {
-            e.stopPropagation();
-            cerrarModal();
-          }}
+          onPress={cerrarModal}
         >
           <Pressable 
             style={styles.modalCard}
@@ -775,18 +771,14 @@ export default function ListaFurgonesScreen() {
                   <TouchableHighlight
                     style={styles.modalButtonCancel}
                     underlayColor="#e0e0e0"
-                    onPress={(e) => {
-                      e.stopPropagation();
-                      cerrarModal();
-                    }}
+                    onPress={cerrarModal}
                   >
                     <Text style={styles.modalButtonCancelText}>Cancelar</Text>
                   </TouchableHighlight>
                   <TouchableHighlight
                     style={styles.modalButtonConfirm}
                     underlayColor={modalTipo === 'advertencia' ? '#b71c1c' : '#0e5b52'}
-                    onPress={(e) => {
-                      e.stopPropagation();
+                    onPress={() => {
                       confirmarModal();
                     }}
                   >

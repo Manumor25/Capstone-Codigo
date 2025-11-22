@@ -185,15 +185,21 @@ export default function ProfileScreen() {
           </TouchableHighlight>
         </Link>
 
-        <Link href="/apoderado/lista-hijos" asChild>
+        <Link href="/(tabs)/conductor/Agregar_documentos_conductor" asChild>
           <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
             <Text style={styles.buttonText}>Añadir documentos</Text>
           </TouchableHighlight>
         </Link>
 
-        <Link href="/apoderado/lista-tutores" asChild>
+        <Link href="/(tabs)/conductor/Agregar_documentos_conductor" asChild>
           <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
             <Text style={styles.buttonText}>Editar documentos</Text>
+          </TouchableHighlight>
+        </Link>
+
+        <Link href="/(tabs)/conductor/reportes-conductor" asChild>
+          <TouchableHighlight style={styles.button} underlayColor="#0e5b52">
+            <Text style={styles.buttonText}>Reportes</Text>
           </TouchableHighlight>
         </Link>
 

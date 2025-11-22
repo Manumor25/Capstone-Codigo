@@ -50,6 +50,8 @@ export default function PostularFurgon() {
   const [nombreConductor, setNombreConductor] = useState<string>('');
   const [telefonoConductor, setTelefonoConductor] = useState<string>('');
   const [cargandoConductor, setCargandoConductor] = useState(false);
+  const [conductorVerificado, setConductorVerificado] = useState<boolean>(false);
+  const [cargandoVerificacion, setCargandoVerificacion] = useState(false);
   const rutConductorParam = (params.rutConductor as string) || '';
   const patenteParam = (params.patente as string) || '';
   const furgonIdParam = (params.id as string) || '';
@@ -167,6 +169,7 @@ export default function PostularFurgon() {
     }
 
     setCargandoConductor(true);
+    setCargandoVerificacion(true);
     try {
       const usuariosRef = collection(db, 'usuarios');
       const q = query(usuariosRef, where('rut', '==', rutConductor));
@@ -180,15 +183,44 @@ export default function PostularFurgon() {
         const telefono = data?.telefono?.toString() || '';
         setNombreConductor(nombreCompleto || 'Conductor no identificado');
         setTelefonoConductor(telefono || 'No disponible');
+
+        // Verificar estado de verificación y documentos
+        const verificado = data?.verificado === true;
+        const documentos = data?.documentos || {};
+        
+        // Verificar si tiene todos los documentos requeridos
+        const tieneCarnetFrontal = documentos?.carnetIdentidad?.frontal?.contenidoCifrado || documentos?.carnetIdentidad?.frontal?.url;
+        const tieneCarnetReverso = documentos?.carnetIdentidad?.reverso?.contenidoCifrado || documentos?.carnetIdentidad?.reverso?.url;
+        const tieneLicenciaFrontal = documentos?.licenciaConducir?.frontal?.contenidoCifrado || documentos?.licenciaConducir?.frontal?.url;
+        const tieneLicenciaReverso = documentos?.licenciaConducir?.reverso?.contenidoCifrado || documentos?.licenciaConducir?.reverso?.url;
+        
+        const tieneTodosDocumentos = tieneCarnetFrontal && tieneCarnetReverso && tieneLicenciaFrontal && tieneLicenciaReverso;
+        
+        // El conductor está verificado si tiene el campo verificado=true Y tiene todos los documentos
+        const estaVerificado = verificado && tieneTodosDocumentos;
+        setConductorVerificado(estaVerificado);
+        
+        console.log('Estado de verificación del conductor:', {
+          verificado,
+          tieneTodosDocumentos,
+          estaVerificado,
+          tieneCarnetFrontal: !!tieneCarnetFrontal,
+          tieneCarnetReverso: !!tieneCarnetReverso,
+          tieneLicenciaFrontal: !!tieneLicenciaFrontal,
+          tieneLicenciaReverso: !!tieneLicenciaReverso,
+        });
       } else {
         setNombreConductor('Conductor no identificado');
         setTelefonoConductor('No disponible');
+        setConductorVerificado(false);
       }
     } catch (error) {
       console.error('No se pudo obtener el nombre del conductor:', error);
       setNombreConductor('Conductor no identificado');
+      setConductorVerificado(false);
     } finally {
       setCargandoConductor(false);
+      setCargandoVerificacion(false);
     }
   };
 
@@ -620,7 +652,21 @@ export default function PostularFurgon() {
             <Text style={styles.detailItem}>Teléfono: {telefonoConductor || 'No disponible'}</Text>
           )}
         </View>
-        <Text style={styles.verified}>Verificado: Si</Text>
+        {cargandoVerificacion ? (
+          <Text style={styles.verified}>Verificado: Cargando...</Text>
+        ) : (
+          <View style={styles.verifiedContainer}>
+            <Text style={[styles.verified, !conductorVerificado && styles.verifiedNo]}>
+              Verificado: {conductorVerificado ? 'Sí' : 'No'}
+            </Text>
+            {conductorVerificado && (
+              <View style={styles.verifiedDetails}>
+                <Text style={styles.verifiedDetailItem}>✓ Licencia de conducir vigente</Text>
+                <Text style={styles.verifiedDetailItem}>✓ Carnet de ID vigente</Text>
+              </View>
+            )}
+          </View>
+        )}
       </View>
 
       <Text style={styles.label}>Selecciona hijo(s)</Text>
@@ -750,10 +796,34 @@ const styles = StyleSheet.create({
     color: '#444',
     marginBottom: 4,
   },
+  verifiedContainer: {
+    marginTop: 8,
+    alignItems: 'center',
+    width: '100%',
+  },
   verified: {
     fontSize: 16,
     color: '#127067',
-    marginTop: 8,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  verifiedNo: {
+    color: '#d32f2f',
+  },
+  verifiedDetails: {
+    marginTop: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#E6F7F5',
+    borderRadius: 8,
+    width: '100%',
+    alignItems: 'flex-start',
+  },
+  verifiedDetailItem: {
+    fontSize: 14,
+    color: '#127067',
+    marginVertical: 2,
+    fontWeight: '500',
   },
   label: {
     fontSize: 16,

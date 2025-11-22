@@ -133,6 +133,9 @@ export default function ListaTutoresScreen() {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
+        <Pressable style={styles.backButton} onPress={handleVolver}>
+          <Ionicons name="arrow-back" size={28} color="#127067" />
+        </Pressable>
         <ActivityIndicator size="large" color="#127067" />
         <Text style={styles.loadingText}>Cargando tutores...</Text>
       </View>
@@ -142,6 +145,9 @@ export default function ListaTutoresScreen() {
   if (tutores.length === 0) {
     return (
       <View style={styles.emptyContainer}>
+        <Pressable style={styles.backButton} onPress={handleVolver}>
+          <Ionicons name="arrow-back" size={28} color="#127067" />
+        </Pressable>
         <Ionicons name="sad-outline" size={60} color="#999" />
         <Text style={styles.emptyText}>No hay tutores registrados</Text>
       </View>
@@ -204,6 +210,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     justifyContent: 'center',
     backgroundColor: '#F5F7F8',
+    paddingTop: 60,
   },
   loadingText: {
     marginTop: 10,
@@ -215,6 +222,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center', 
     alignItems: 'center',
     backgroundColor: '#F5F7F8',
+    paddingTop: 60,
   },
   emptyText: { 
     marginTop: 8, 
