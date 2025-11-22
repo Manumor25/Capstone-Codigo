@@ -21,6 +21,7 @@ android/local.properties
 android/.gradle
 android/build
 android/app/build
+android/build/generated/autolinking
 
 # Ignorar configuraciones locales de iOS
 ios/Pods
