@@ -57,15 +57,203 @@ export default function AddTutorScreen() {
     obtenerRutUsuario();
   }, []);
 
+  // Función para formatear RUT (00.000.000-K)
+  const formatearRUT = (text: string): string => {
+    // Remover todo excepto números y la letra K
+    let rutLimpio = text.replace(/[^0-9kK]/g, '');
+    
+    if (rutLimpio.length === 0) {
+      return '';
+    }
+    
+    // Separar el dígito verificador del resto
+    const ultimoCaracter = rutLimpio.slice(-1).toUpperCase();
+    const esDigitoVerificador = /[0-9kK]/.test(ultimoCaracter);
+    
+    let rutSinDV = '';
+    let digitoVerificador = '';
+    
+    if (esDigitoVerificador && rutLimpio.length > 1) {
+      rutSinDV = rutLimpio.slice(0, -1);
+      digitoVerificador = ultimoCaracter;
+    } else if (rutLimpio.length === 1 && /[0-9]/.test(rutLimpio)) {
+      rutSinDV = rutLimpio;
+    } else {
+      rutSinDV = rutLimpio;
+    }
+    
+    if (rutSinDV.length === 0) {
+      return digitoVerificador;
+    }
+    
+    let rutFormateado = '';
+    let contador = 0;
+    
+    // Agregar puntos desde la derecha
+    for (let i = rutSinDV.length - 1; i >= 0; i--) {
+      if (contador === 3) {
+        rutFormateado = '.' + rutFormateado;
+        contador = 0;
+      }
+      rutFormateado = rutSinDV[i] + rutFormateado;
+      contador++;
+    }
+    
+    // Agregar el dígito verificador si existe
+    if (digitoVerificador) {
+      return rutFormateado + '-' + digitoVerificador;
+    }
+    
+    return rutFormateado;
+  };
+
+  // Función para manejar el cambio de RUT
+  const manejarCambioRUT = (text: string) => {
+    // Solo permitir números y K/k (el guión debe estar al final para evitar problemas con el rango)
+    const rutValido = text.replace(/[^0-9kK.\-]/g, '');
+    const rutFormateado = formatearRUT(rutValido);
+    setRut(rutFormateado);
+    
+    // Validar formato de RUT
+    const rutPattern = /^\d{1,2}\.\d{3}\.\d{3}-[0-9kK]$/;
+    if (rutFormateado && rutFormateado.length > 0) {
+      if (!rutPattern.test(rutFormateado) && rutFormateado.length > 3) {
+        setErrores(prev => ({
+          ...prev,
+          rut: 'Formato de RUT inválido. Use el formato: 12.345.678-9'
+        }));
+      } else {
+        setErrores(prev => ({
+          ...prev,
+          rut: ''
+        }));
+      }
+    } else {
+      setErrores(prev => ({
+        ...prev,
+        rut: ''
+      }));
+    }
+  };
+
+  // Función para formatear fecha (dd/mm/yyyy)
+  const formatearFecha = (text: string): string => {
+    // Remover todo excepto números
+    const numeros = text.replace(/[^0-9]/g, '');
+    
+    // Si no hay nada, retornar vacío
+    if (numeros.length === 0) {
+      return '';
+    }
+    
+    // Limitar a 8 dígitos (ddmmyyyy)
+    const numerosLimitados = numeros.slice(0, 8);
+    
+    // Formatear según la longitud
+    if (numerosLimitados.length <= 2) {
+      return numerosLimitados;
+    } else if (numerosLimitados.length <= 4) {
+      return numerosLimitados.slice(0, 2) + '/' + numerosLimitados.slice(2);
+    } else {
+      return numerosLimitados.slice(0, 2) + '/' + numerosLimitados.slice(2, 4) + '/' + numerosLimitados.slice(4);
+    }
+  };
+
+  // Función para validar fecha
+  const validarFecha = (fecha: string): boolean => {
+    if (!fecha || fecha.length < 10) {
+      return false;
+    }
+    
+    const fechaPattern = /^(\d{2})\/(\d{2})\/(\d{4})$/;
+    const match = fecha.match(fechaPattern);
+    
+    if (!match) {
+      return false;
+    }
+    
+    const dia = parseInt(match[1], 10);
+    const mes = parseInt(match[2], 10);
+    const año = parseInt(match[3], 10);
+    
+    // Validar rangos
+    if (mes < 1 || mes > 12) {
+      return false;
+    }
+    
+    if (dia < 1 || dia > 31) {
+      return false;
+    }
+    
+    // Validar días según el mes
+    const diasPorMes = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    const esBisiesto = (año % 4 === 0 && año % 100 !== 0) || (año % 400 === 0);
+    if (esBisiesto) {
+      diasPorMes[1] = 29;
+    }
+    
+    if (dia > diasPorMes[mes - 1]) {
+      return false;
+    }
+    
+    // Validar que el año sea razonable (entre 1900 y año actual)
+    const añoActual = new Date().getFullYear();
+    if (año < 1900 || año > añoActual) {
+      return false;
+    }
+    
+    return true;
+  };
+
+  // Función para manejar el cambio de fecha
+  const manejarCambioFecha = (text: string) => {
+    const fechaFormateada = formatearFecha(text);
+    setFechaNacimiento(fechaFormateada);
+    
+    // Validar fecha
+    if (fechaFormateada && fechaFormateada.length > 0) {
+      if (fechaFormateada.length === 10) {
+        if (!validarFecha(fechaFormateada)) {
+          setErrores(prev => ({
+            ...prev,
+            fechaNacimiento: 'Fecha inválida. Use el formato: dd/mm/aaaa'
+          }));
+        } else {
+          setErrores(prev => ({
+            ...prev,
+            fechaNacimiento: ''
+          }));
+        }
+      } else {
+        setErrores(prev => ({
+          ...prev,
+          fechaNacimiento: ''
+        }));
+      }
+    } else {
+      setErrores(prev => ({
+        ...prev,
+        fechaNacimiento: ''
+      }));
+    }
+  };
+
   // 🔹 Guardar tutor en Firestore
   const manejarGuardarTutor = async () => {
+    // Validar formato de RUT
+    const rutPattern = /^\d{1,2}\.\d{3}\.\d{3}-[0-9kK]$/;
+    const rutValido = rut && rutPattern.test(rut);
+    
+    // Validar formato de fecha
+    const fechaValida = fechaNacimiento && validarFecha(fechaNacimiento);
+    
     const nuevosErrores = {
-      nombres: !nombres ? 'Ingresa el nombre del tutor' : '',
-      apellidos: !apellidos ? 'Ingresa el apellido' : '',
-      rut: !rut ? 'Ingresa el RUT del tutor' : '',
-      fechaNacimiento: !fechaNacimiento ? 'Ingresa la fecha de nacimiento' : '',
+      nombres: !nombres.trim() ? 'Ingresa el nombre del tutor' : '',
+      apellidos: !apellidos.trim() ? 'Ingresa el apellido' : '',
+      rut: !rut ? 'Ingresa el RUT del tutor' : (!rutValido ? 'Formato de RUT inválido. Use el formato: 12.345.678-9' : ''),
+      fechaNacimiento: !fechaNacimiento ? 'Ingresa la fecha de nacimiento' : (!fechaValida ? 'Fecha inválida. Use el formato: dd/mm/aaaa' : ''),
       edad: !edad ? 'Ingresa la edad' : '',
-      direccion: !direccion ? 'Ingresa la dirección' : '',
+      direccion: !direccion.trim() ? 'Ingresa la dirección' : '',
     };
 
     setErrores(nuevosErrores);
@@ -151,10 +339,10 @@ export default function AddTutorScreen() {
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Rut</Text>
             <TextInput
-              style={styles.input}
-              placeholder="Ingresa el RUT"
+              style={[styles.input, errores.rut ? styles.inputError : null]}
+              placeholder="12.345.678-9"
               value={rut}
-              onChangeText={setRut}
+              onChangeText={manejarCambioRUT}
             />
             {errores.rut ? <Text style={styles.errorText}>{errores.rut}</Text> : null}
           </View>
@@ -162,10 +350,11 @@ export default function AddTutorScreen() {
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Fecha de nacimiento</Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, errores.fechaNacimiento ? styles.inputError : null]}
               placeholder="dd/mm/aaaa"
               value={fechaNacimiento}
-              onChangeText={setFechaNacimiento}
+              onChangeText={manejarCambioFecha}
+              keyboardType="numeric"
             />
             {errores.fechaNacimiento ? (
               <Text style={styles.errorText}>{errores.fechaNacimiento}</Text>
@@ -284,6 +473,10 @@ const styles = StyleSheet.create({
     padding: 15,
     backgroundColor: '#F5F7F8',
     fontSize: 16,
+  },
+  inputError: {
+    borderColor: 'red',
+    borderWidth: 2,
   },
   button: {
     backgroundColor: '#127067',

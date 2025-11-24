@@ -44,16 +44,6 @@ export default function HomeScreen() {
               <Text style={styles.buttonText}>Ingresa</Text>
             </TouchableHighlight>
           </Link>
-
-          {/* Botón Ver base de datos */}
-          <Link href="/admin-viewer" asChild>
-            <TouchableHighlight
-              underlayColor="#127067"
-              style={styles.button}
-            >
-              <Text style={styles.buttonText}>Ver base de datos</Text>
-            </TouchableHighlight>
-          </Link>
         </View>
       </SafeAreaView>
     </>

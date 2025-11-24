@@ -53,15 +53,28 @@ export default function LoginScreen() {
     try {
       // Validar que Firebase esté inicializado
       if (!db) {
-        throw new Error('Firebase no está inicializado correctamente.');
+        console.error('Firebase db no está disponible');
+        throw new Error('Firebase no está inicializado correctamente. Verifica tu conexión a internet.');
       }
 
+      console.log('Iniciando búsqueda de usuario...');
       const usuariosRef = collection(db, 'usuarios');
       const correoNormalizado = correo.trim().toLowerCase();
       
       // Primero intentar buscar con el correo normalizado (minúsculas)
       let q = query(usuariosRef, where('correo', '==', correoNormalizado));
-      let querySnapshot = await getDocs(q);
+      let querySnapshot;
+      
+      try {
+        querySnapshot = await getDocs(q);
+      } catch (queryError: any) {
+        console.error('Error en query de Firestore:', queryError);
+        // Verificar si es un error de red
+        if (queryError.code === 'unavailable' || queryError.message?.includes('network') || queryError.message?.includes('internet')) {
+          throw new Error('No hay conexión a internet. Verifica tu conexión e intenta nuevamente.');
+        }
+        throw new Error('Error al conectar con la base de datos. Intenta nuevamente.');
+      }
 
       // Si no se encuentra, buscar todos los usuarios y filtrar en el cliente
       // (esto maneja el caso donde el correo está guardado con mayúsculas)
@@ -137,40 +150,137 @@ export default function LoginScreen() {
             throw new Error('Datos del usuario incompletos para guardar.');
           }
 
-          await AsyncStorage.setItem('rutUsuario', rutString);
-          await AsyncStorage.setItem('userName', nombreCompleto);
-          await AsyncStorage.setItem('userRole', rolString);
-
-          console.log('✅ Login exitoso, RUT y nombre guardados:', rutString, nombreCompleto);
-          console.log('✅ Rol del usuario:', rolString);
-
-          // Verificar que los datos se guardaron correctamente
-          const rutVerificado = await AsyncStorage.getItem('rutUsuario');
-          if (!rutVerificado || rutVerificado !== rutString) {
-            throw new Error('Error al guardar los datos de sesión.');
+          // Guardar datos en AsyncStorage con múltiples intentos en Android
+          let intentosGuardado = 0;
+          const maxIntentos = 3;
+          let guardadoExitoso = false;
+          
+          while (intentosGuardado < maxIntentos && !guardadoExitoso) {
+            try {
+              await AsyncStorage.setItem('rutUsuario', rutString);
+              await AsyncStorage.setItem('userName', nombreCompleto);
+              await AsyncStorage.setItem('userRole', rolString);
+              
+              // Esperar un momento para que se complete la escritura
+              await new Promise(resolve => setTimeout(resolve, 100));
+              
+              // Verificar que los datos se guardaron correctamente
+              const rutVerificado = await AsyncStorage.getItem('rutUsuario');
+              const rolVerificado = await AsyncStorage.getItem('userRole');
+              
+              if (rutVerificado === rutString && rolVerificado === rolString) {
+                guardadoExitoso = true;
+                console.log('✅ Login exitoso, RUT y nombre guardados:', rutString, nombreCompleto);
+                console.log('✅ Rol del usuario:', rolString);
+              } else {
+                intentosGuardado++;
+                if (intentosGuardado < maxIntentos) {
+                  console.warn(`Intento ${intentosGuardado} falló, reintentando...`);
+                  await new Promise(resolve => setTimeout(resolve, 200));
+                }
+              }
+            } catch (storageAttemptError) {
+              intentosGuardado++;
+              console.error(`Error en intento ${intentosGuardado} de guardar datos:`, storageAttemptError);
+              if (intentosGuardado >= maxIntentos) {
+                throw new Error('Error al guardar los datos de sesión después de varios intentos.');
+              }
+              await new Promise(resolve => setTimeout(resolve, 200));
+            }
+          }
+          
+          if (!guardadoExitoso) {
+            throw new Error('No se pudieron guardar los datos de sesión después de varios intentos.');
           }
 
           // Redirigir según el rol del usuario
           // Usar setTimeout para asegurar que AsyncStorage se guarde antes de navegar
-          setTimeout(() => {
+          // En Android, usar un delay mayor y verificar que todo esté listo
+          setTimeout(async () => {
             try {
-              if (rolString === 'Conductor') {
-                router.replace('/(tabs)/conductor/pagina-principal-conductor');
-              } else if (rolString === 'Apoderado') {
-                router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-              } else {
-                Alert.alert('Error', 'Rol de usuario no válido.');
-                isProcessingRef.current = false;
-                setLoading(false);
+              // Verificar nuevamente que los datos estén guardados
+              const rutVerificadoFinal = await AsyncStorage.getItem('rutUsuario');
+              const rolVerificadoFinal = await AsyncStorage.getItem('userRole');
+              
+              if (!rutVerificadoFinal || !rolVerificadoFinal) {
+                throw new Error('Los datos de sesión no se guardaron correctamente.');
               }
-            } catch (navError: any) {
-              console.error('Error al navegar:', navError);
-              const errorMessage = navError?.message || 'Error desconocido al navegar';
-              Alert.alert('Error', `Ocurrió un error al redirigir: ${errorMessage}. Por favor, intenta de nuevo.`);
+              
+              console.log('Navegando a:', rolString);
+              
+              // Resetear estados antes de navegar
+              isProcessingRef.current = false;
+              setLoading(false);
+              
+              // En Android, usar un enfoque más seguro para la navegación
+              if (Platform.OS === 'android') {
+                // Usar un delay adicional y verificar que el router esté disponible
+                setTimeout(() => {
+                  try {
+                    if (!router) {
+                      throw new Error('Router no está disponible');
+                    }
+                    
+                    if (rolString === 'Conductor') {
+                      console.log('Redirigiendo a página principal del conductor...');
+                      // Usar replace en lugar de push para evitar problemas de stack
+                      router.replace('/(tabs)/conductor/pagina-principal-conductor');
+                    } else if (rolString === 'Apoderado') {
+                      console.log('Redirigiendo a página principal del apoderado...');
+                      router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
+                    } else {
+                      console.error('Rol no válido:', rolString);
+                      Alert.alert('Error', 'Rol de usuario no válido.');
+                    }
+                  } catch (navError: any) {
+                    console.error('Error crítico al navegar en Android:', navError);
+                    const errorMessage = navError?.message || 'Error desconocido al navegar';
+                    Alert.alert(
+                      'Error de navegación', 
+                      `No se pudo redirigir: ${errorMessage}. Por favor, cierra y vuelve a abrir la aplicación.`
+                    );
+                    // Intentar navegar al login como fallback
+                    try {
+                      router.replace('/login');
+                    } catch (fallbackError) {
+                      console.error('Error en fallback de navegación:', fallbackError);
+                    }
+                  }
+                }, 300);
+              } else {
+                // Para iOS/Web, usar el método normal
+                requestAnimationFrame(() => {
+                  try {
+                    if (rolString === 'Conductor') {
+                      console.log('Redirigiendo a página principal del conductor...');
+                      router.push('/(tabs)/conductor/pagina-principal-conductor');
+                    } else if (rolString === 'Apoderado') {
+                      console.log('Redirigiendo a página principal del apoderado...');
+                      router.push('/(tabs)/apoderado/pagina-principal-apoderado');
+                    } else {
+                      console.error('Rol no válido:', rolString);
+                      Alert.alert('Error', 'Rol de usuario no válido.');
+                    }
+                  } catch (navError: any) {
+                    console.error('Error crítico al navegar:', navError);
+                    const errorMessage = navError?.message || 'Error desconocido al navegar';
+                    Alert.alert(
+                      'Error de navegación', 
+                      `No se pudo redirigir: ${errorMessage}. Por favor, intenta de nuevo.`
+                    );
+                  }
+                });
+              }
+            } catch (verificationError: any) {
+              console.error('Error al verificar datos antes de navegar:', verificationError);
+              Alert.alert(
+                'Error', 
+                'No se pudieron verificar los datos de sesión. Por favor, intenta iniciar sesión nuevamente.'
+              );
               isProcessingRef.current = false;
               setLoading(false);
             }
-          }, 200);
+          }, Platform.OS === 'android' ? 500 : 200);
         } catch (storageError: any) {
           console.error('Error al guardar en AsyncStorage:', storageError);
           const errorMessage = storageError?.message || 'Error desconocido';

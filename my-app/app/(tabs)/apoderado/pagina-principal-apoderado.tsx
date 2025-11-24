@@ -99,6 +99,12 @@ export default function PaginaPrincipal() {
   useEffect(() => {
     const cargarDatos = async () => {
       try {
+        // Verificar que Firebase esté inicializado
+        if (!db) {
+          console.error('Firebase no está inicializado en cargarDatos (apoderado)');
+          return;
+        }
+
         const [rutGuardado, rutHijoPrevio, alertasBorradasGuardadas] = await Promise.all([
           AsyncStorage.getItem('rutUsuario'),
           AsyncStorage.getItem('rutHijoSeleccionado'),

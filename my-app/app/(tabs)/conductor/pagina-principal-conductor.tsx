@@ -53,6 +53,8 @@ export default function PaginaPrincipalConductor() {
   const [modalSeleccionarReceptorVisible, setModalSeleccionarReceptorVisible] = useState(false);
   const [receptoresDisponibles, setReceptoresDisponibles] = useState<Array<{ rut: string; nombre: string; tipo: string }>>([]);
   const [alertaSeleccionada, setAlertaSeleccionada] = useState<any | null>(null);
+  const [mostrarInputOtraPersona, setMostrarInputOtraPersona] = useState(false);
+  const [nombreOtraPersona, setNombreOtraPersona] = useState('');
   const [rutaGenerada, setRutaGenerada] = useState<{
     waypoints: Array<{ coordinates: { latitude: number; longitude: number }; name: string; rutHijo?: string }>;
     routeGeometry?: any;
@@ -248,8 +250,15 @@ export default function PaginaPrincipalConductor() {
 
     const cargarDatos = async () => {
       try {
+        // Verificar que Firebase esté inicializado
+        if (!db) {
+          console.error('Firebase no está inicializado en cargarDatos');
+          return;
+        }
+
         const rutGuardado = await AsyncStorage.getItem('rutUsuario');
         if (!rutGuardado) {
+          console.log('No se encontró RUT en AsyncStorage');
           setAlertas([]);
           return;
         }
@@ -965,6 +974,36 @@ export default function PaginaPrincipalConductor() {
     };
   }, [rutConductor, ubicacionActual]);
 
+  // Manejo de errores global para prevenir crashes
+  useEffect(() => {
+    const errorHandler = (error: Error) => {
+      console.error('Error no capturado:', error);
+      // No mostrar alerta aquí para evitar loops, solo loguear
+    };
+
+    // Para React Native, usar ErrorUtils
+    if (typeof ErrorUtils !== 'undefined') {
+      const originalHandler = ErrorUtils.getGlobalHandler();
+      ErrorUtils.setGlobalHandler((error: Error, isFatal?: boolean) => {
+        console.error('Error global en React Native:', error, 'Fatal:', isFatal);
+        if (originalHandler) {
+          originalHandler(error, isFatal);
+        }
+      });
+    }
+
+    // Para web
+    if (typeof window !== 'undefined') {
+      const webErrorHandler = (event: ErrorEvent) => {
+        console.error('Error global en web:', event);
+      };
+      window.addEventListener('error', webErrorHandler);
+      return () => {
+        window.removeEventListener('error', webErrorHandler);
+      };
+    }
+  }, []);
+
   // Obtener y actualizar ubicación en tiempo real
   useEffect(() => {
     let isMounted = true;
@@ -992,9 +1031,14 @@ export default function PaginaPrincipalConductor() {
           setUbicacionActual(coords);
           ubicacionActualRef.current = coords;
 
-          // Guardar ubicación en Firestore
-          if (rutConductor) {
-            await guardarUbicacionEnFirestore(coords);
+          // Guardar ubicación en Firestore (con manejo de errores)
+          if (rutConductor && db) {
+            try {
+              await guardarUbicacionEnFirestore(coords);
+            } catch (firestoreError) {
+              console.error('Error al guardar ubicación inicial en Firestore:', firestoreError);
+              // No mostrar error al usuario, solo loguear
+            }
           }
         }
 
@@ -1014,9 +1058,14 @@ export default function PaginaPrincipalConductor() {
               setUbicacionActual(coords);
               ubicacionActualRef.current = coords;
 
-              // Guardar ubicación en Firestore
-              if (rutConductor) {
-                await guardarUbicacionEnFirestore(coords);
+              // Guardar ubicación en Firestore (con manejo de errores)
+              if (rutConductor && db) {
+                try {
+                  await guardarUbicacionEnFirestore(coords);
+                } catch (firestoreError) {
+                  console.error('Error al guardar ubicación actualizada en Firestore:', firestoreError);
+                  // No mostrar error al usuario, solo loguear
+                }
               }
             }
           }
@@ -1036,8 +1085,10 @@ export default function PaginaPrincipalConductor() {
                 };
                 setUbicacionActual(coords);
                 ubicacionActualRef.current = coords;
-                if (rutConductor) {
-                  guardarUbicacionEnFirestore(coords);
+                if (rutConductor && db) {
+                  guardarUbicacionEnFirestore(coords).catch((firestoreError) => {
+                    console.error('Error al guardar ubicación (fallback) en Firestore:', firestoreError);
+                  });
                 }
               }
             },
@@ -1056,7 +1107,10 @@ export default function PaginaPrincipalConductor() {
 
     const guardarUbicacionEnFirestore = async (coords: { latitude: number; longitude: number }) => {
       try {
-        if (!rutConductor) return;
+        if (!rutConductor || !db) {
+          console.warn('No se puede guardar ubicación: falta rutConductor o db');
+          return;
+        }
 
         const ubicacionRef = doc(db, 'ubicaciones_conductor', rutConductor);
         await setDoc(
@@ -1070,8 +1124,9 @@ export default function PaginaPrincipalConductor() {
           { merge: true }
         );
         console.log('Ubicación guardada en Firestore:', coords);
-      } catch (error) {
+      } catch (error: any) {
         console.error('Error al guardar ubicación en Firestore:', error);
+        // No lanzar el error, solo loguearlo para evitar crashes
       }
     };
 
@@ -1707,6 +1762,307 @@ export default function PaginaPrincipalConductor() {
       setGenerandoRuta(false);
     } finally {
       // Siempre resetear el estado de generación
+      setGenerandoRuta(false);
+      console.log('✅ Estado generandoRuta reseteado a false');
+    }
+  };
+
+  const handleGenerarRutaAlColegio = async () => {
+    console.log('🚀 Iniciando generación de ruta al colegio...');
+    console.log('📊 Pasajeros disponibles:', pasajeros.length);
+    
+    let pasajerosParaRuta = pasajeros;
+    
+    // SIEMPRE recargar pasajeros antes de generar la ruta
+    console.log('🔄 Recargando pasajeros antes de generar ruta al colegio...');
+    try {
+      const rutGuardado = await AsyncStorage.getItem('rutUsuario');
+      if (!rutGuardado) {
+        Alert.alert('Error', 'No se encontró el RUT del conductor.');
+        return;
+      }
+      
+      // Obtener la dirección del colegio del furgón promocionado
+      let direccionColegio = '';
+      try {
+        const furgonesRef = collection(db, 'Furgones');
+        const furgonesQuery = query(furgonesRef, where('rutUsuario', '==', rutGuardado));
+        const furgonesSnapshot = await getDocs(furgonesQuery);
+        
+        if (!furgonesSnapshot.empty) {
+          const furgonData = furgonesSnapshot.docs[0].data();
+          direccionColegio = furgonData.direccionColegio || '';
+          console.log('📍 Dirección del colegio encontrada:', direccionColegio);
+        } else {
+          Alert.alert('Error', 'No se encontró un furgón promocionado. Debes promocionar un furgón primero.');
+          return;
+        }
+      } catch (error) {
+        console.error('Error al obtener dirección del colegio:', error);
+        Alert.alert('Error', 'No se pudo obtener la dirección del colegio.');
+        return;
+      }
+      
+      if (!direccionColegio) {
+        Alert.alert('Error', 'No se encontró la dirección del colegio en el furgón promocionado.');
+        return;
+      }
+      
+      console.log('🔍 Buscando pasajeros con RUT:', rutGuardado);
+      const listaPasajerosRef = collection(db, 'lista_pasajeros');
+      
+      let pasajerosQuery = query(listaPasajerosRef, where('rutConductor', '==', rutGuardado));
+      let pasajerosSnapshot = await getDocs(pasajerosQuery);
+      
+      console.log(`📋 Pasajeros encontrados con RUT original: ${pasajerosSnapshot.docs.length}`);
+      
+      if (pasajerosSnapshot.docs.length === 0) {
+        const rutNormalizado = normalizarRut(rutGuardado);
+        console.log('🔍 Intentando con RUT normalizado:', rutNormalizado);
+        pasajerosQuery = query(listaPasajerosRef, where('rutConductor', '==', rutNormalizado));
+        pasajerosSnapshot = await getDocs(pasajerosQuery);
+        console.log(`📋 Pasajeros encontrados con RUT normalizado: ${pasajerosSnapshot.docs.length}`);
+      }
+      
+      if (pasajerosSnapshot.docs.length === 0) {
+        Alert.alert(
+          'Sin pasajeros', 
+          `No se encontraron pasajeros asignados para tu RUT (${rutGuardado}).\n\nVerifica que tengas niños inscritos en tus furgones.`
+        );
+        return;
+      }
+      
+      const ubicacionActualizada = ubicacionActualRef.current || { latitude: -33.45, longitude: -70.6667 };
+      const pasajerosLista = await procesarYOrdenarPasajeros(pasajerosSnapshot, ubicacionActualizada);
+      
+      console.log(`✅ Recarga completada: ${pasajerosLista.length} pasajeros procesados`);
+      
+      if (pasajerosLista.length === 0) {
+        Alert.alert(
+          'Sin pasajeros disponibles', 
+          'Se encontraron pasajeros en la base de datos, pero todos están marcados como entregados o no tienen direcciones válidas.'
+        );
+        return;
+      }
+      
+      setPasajeros(pasajerosLista);
+      
+      const siguienteNinoNoEntregado = pasajerosLista.find(p => {
+        const estado = (p.estadoViaje || '').toString().trim().toLowerCase();
+        return estado !== 'entregado';
+      });
+      if (siguienteNinoNoEntregado) {
+        setSiguienteNino(siguienteNinoNoEntregado);
+      } else if (pasajerosLista.length > 0) {
+        setSiguienteNino(pasajerosLista[0]);
+      }
+      
+      pasajerosParaRuta = pasajerosLista;
+    } catch (error) {
+      console.error('❌ Error al recargar pasajeros:', error);
+      Alert.alert('Error', 'Ocurrió un error al cargar los pasajeros. Por favor, intenta nuevamente.');
+      return;
+    }
+
+    setGenerandoRuta(true);
+    try {
+      const MAPBOX_TOKEN = 'pk.eyJ1IjoiYmFydG94IiwiYSI6ImNtaGpxaGZudzE4NHMycnB0bnMwdjVtbHIifQ.Makrf18R1Z9Wo4V-yMXUYw';
+      
+      // Obtener dirección del colegio nuevamente
+      const rutGuardado = await AsyncStorage.getItem('rutUsuario');
+      let direccionColegio = '';
+      if (rutGuardado) {
+        const furgonesRef = collection(db, 'Furgones');
+        const furgonesQuery = query(furgonesRef, where('rutUsuario', '==', rutGuardado));
+        const furgonesSnapshot = await getDocs(furgonesQuery);
+        if (!furgonesSnapshot.empty) {
+          direccionColegio = furgonesSnapshot.docs[0].data().direccionColegio || '';
+        }
+      }
+      
+      const pasajerosActuales = pasajerosParaRuta;
+      const waypoints: Array<{ coordinates: { latitude: number; longitude: number }; name: string; rutHijo: string }> = [];
+      
+      console.log('📍 Procesando waypoints para', pasajerosActuales.length, 'pasajeros...');
+      for (const pasajero of pasajerosActuales) {
+        console.log(`  - Procesando: ${pasajero.nombreHijo}`);
+        try {
+          const usuariosRef = collection(db, 'usuarios');
+          const apoderadoQuery = query(usuariosRef, where('rut', '==', pasajero.rutApoderado.trim()), limit(1));
+          const apoderadoSnap = await getDocs(apoderadoQuery);
+          
+          if (!apoderadoSnap.empty) {
+            const apoderadoData = apoderadoSnap.docs[0].data();
+            const direccion = apoderadoData.direccion || '';
+            
+            if (direccion) {
+              const direccionConPais = `${direccion}, Chile`;
+              const encodedAddress = encodeURIComponent(direccionConPais);
+              
+              const geocodeResponse = await fetch(
+                `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedAddress}.json?access_token=${MAPBOX_TOKEN}&limit=1&country=cl&types=address`
+              );
+              const geocodeData = await geocodeResponse.json();
+              
+              if (geocodeData.features && geocodeData.features.length > 0) {
+                const [lng, lat] = geocodeData.features[0].center;
+                waypoints.push({
+                  coordinates: { latitude: lat, longitude: lng },
+                  name: `${pasajero.nombreHijo} - ${direccion}`,
+                  rutHijo: pasajero.rutHijo,
+                });
+              }
+            }
+          }
+        } catch (error) {
+          console.error(`Error al obtener dirección para ${pasajero.nombreHijo}:`, error);
+        }
+      }
+
+      // Agregar el colegio como último destino
+      if (direccionColegio) {
+        try {
+          const direccionColegioConPais = `${direccionColegio}, Chile`;
+          const encodedAddress = encodeURIComponent(direccionColegioConPais);
+          
+          const geocodeResponse = await fetch(
+            `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedAddress}.json?access_token=${MAPBOX_TOKEN}&limit=1&country=cl&types=address`
+          );
+          const geocodeData = await geocodeResponse.json();
+          
+          if (geocodeData.features && geocodeData.features.length > 0) {
+            const [lng, lat] = geocodeData.features[0].center;
+            waypoints.push({
+              coordinates: { latitude: lat, longitude: lng },
+              name: `Colegio - ${direccionColegio}`,
+              rutHijo: '', // El colegio no tiene rutHijo
+            });
+            console.log('✅ Dirección del colegio agregada como último destino');
+          } else {
+            console.warn('⚠️ No se pudo geocodificar la dirección del colegio');
+            Alert.alert('Advertencia', 'No se pudo encontrar la ubicación del colegio. La ruta se generará sin el colegio como destino final.');
+          }
+        } catch (error) {
+          console.error('Error al geocodificar dirección del colegio:', error);
+          Alert.alert('Advertencia', 'No se pudo agregar el colegio a la ruta.');
+        }
+      }
+
+      if (waypoints.length === 0) {
+        Alert.alert('Error', 'No se pudieron obtener direcciones válidas de los pasajeros.');
+        setGenerandoRuta(false);
+        return;
+      }
+
+      const origen = ubicacionActual || { latitude: -33.45, longitude: -70.6667 };
+      
+      const coordinates = [
+        `${origen.longitude},${origen.latitude}`,
+        ...waypoints.map(w => `${w.coordinates.longitude},${w.coordinates.latitude}`),
+      ];
+      const coordinatesString = coordinates.join(';');
+      
+      const radiuses = coordinates.map(() => '500').join(';');
+      const approaches = ['unrestricted', ...waypoints.map(() => 'curb')].join(';');
+      
+      let directionsUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinatesString}?`;
+      directionsUrl += `geometries=geojson`;
+      directionsUrl += `&steps=true`;
+      directionsUrl += `&overview=full`;
+      directionsUrl += `&annotations=distance,duration`;
+      directionsUrl += `&radiuses=${radiuses}`;
+      directionsUrl += `&approaches=${approaches}`;
+      directionsUrl += `&access_token=${MAPBOX_TOKEN}`;
+      
+      console.log('🗺️ Generando ruta al colegio...');
+      console.log('📍 Coordenadas:', coordinates.length, 'puntos (incluyendo colegio)');
+      
+      const directionsResponse = await fetch(directionsUrl);
+      
+      if (!directionsResponse.ok) {
+        console.error('❌ Error HTTP:', directionsResponse.status, directionsResponse.statusText);
+        const errorText = await directionsResponse.text();
+        console.error('❌ Error response:', errorText);
+        throw new Error(`Error HTTP ${directionsResponse.status}: ${directionsResponse.statusText}`);
+      }
+      
+      const directionsData = await directionsResponse.json();
+      
+      console.log('📡 Respuesta de Mapbox - Code:', directionsData.code);
+      
+      if (directionsData.code === 'Ok' && directionsData.routes && directionsData.routes.length > 0) {
+        const route = directionsData.routes[0];
+        const routeGeometry = {
+          type: 'Feature',
+          geometry: route.geometry,
+        };
+        
+        const distanciaTotal = route.distance ? (route.distance / 1000).toFixed(1) : 'N/A';
+        const tiempoEstimado = route.duration ? Math.round(route.duration / 60) : 'N/A';
+        
+        console.log(`✅ Ruta al colegio generada: ${distanciaTotal} km, ${tiempoEstimado} minutos`);
+        
+        const fechaInicioRuta = new Date();
+        const fechaInicioFormateada = fechaInicioRuta.toLocaleString('es-CL', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+        
+        setRutaGenerada({
+          waypoints,
+          routeGeometry,
+          distancia: distanciaTotal,
+          tiempoEstimado: typeof tiempoEstimado === 'number' ? tiempoEstimado : undefined,
+          fechaInicio: fechaInicioRuta,
+          fechaInicioFormateada: fechaInicioFormateada,
+        });
+        
+        // Guardar la ruta en la base de datos
+        try {
+          const rutGuardado = await AsyncStorage.getItem('rutUsuario');
+          if (rutGuardado) {
+            const rutConductorNormalizado = normalizarRut(rutGuardado);
+            const rutasActivasRef = collection(db, 'rutas_activas');
+            const rutaDocRef = doc(rutasActivasRef, rutConductorNormalizado);
+            
+            await setDoc(rutaDocRef, {
+              rutConductor: rutConductorNormalizado,
+              waypoints: waypoints.map(w => ({
+                coordinates: w.coordinates,
+                name: w.name,
+                rutHijo: w.rutHijo,
+              })),
+              routeGeometry: routeGeometry,
+              distancia: distanciaTotal,
+              tiempoEstimado: typeof tiempoEstimado === 'number' ? tiempoEstimado : undefined,
+              fechaGeneracion: serverTimestamp(),
+              activa: true,
+            }, { merge: true });
+            
+            console.log('✅ Ruta al colegio guardada en rutas_activas');
+          }
+        } catch (error) {
+          console.error('Error al guardar ruta:', error);
+        }
+        
+        Alert.alert(
+          'Ruta al colegio generada', 
+          `Se generó una ruta que pasa por ${pasajerosActuales.length} niño(s) y termina en el colegio.\n\nDistancia: ${distanciaTotal} km\nTiempo estimado: ${tiempoEstimado} minutos`
+        );
+      } else {
+        console.error('❌ Error en respuesta de Mapbox:', directionsData);
+        const errorMessage = directionsData.message || 'No se pudo generar la ruta. Verifica las direcciones.';
+        Alert.alert('Error', errorMessage);
+      }
+    } catch (error) {
+      console.error('Error al generar ruta al colegio:', error);
+      Alert.alert('Error', 'Ocurrió un error al generar la ruta al colegio.');
+      setGenerandoRuta(false);
+    } finally {
       setGenerandoRuta(false);
       console.log('✅ Estado generandoRuta reseteado a false');
     }
@@ -2623,6 +2979,15 @@ export default function PaginaPrincipalConductor() {
     }
   };
 
+  // Función para verificar si la ruta es al colegio
+  const esRutaAlColegio = (): boolean => {
+    if (!rutaGenerada || !rutaGenerada.waypoints || rutaGenerada.waypoints.length === 0) {
+      return false;
+    }
+    const ultimoWaypoint = rutaGenerada.waypoints[rutaGenerada.waypoints.length - 1];
+    return ultimoWaypoint.name.toLowerCase().includes('colegio');
+  };
+
   const handleDropOff = async () => {
     if (!siguienteNino) return;
     
@@ -2650,18 +3015,13 @@ export default function PaginaPrincipalConductor() {
         // Cargar receptores disponibles (apoderado + tutores)
         const receptores = await cargarReceptoresDisponibles(rutApoderado);
         
-        if (receptores.length === 0) {
-          Alert.alert('Error', 'No se encontraron receptores disponibles.');
-          return;
-        }
+        // Guardar datos del pasajero para usar en el modal
+        setReceptoresDisponibles(receptores);
         
-        // Si solo hay un receptor, entregar directamente
-        if (receptores.length === 1) {
-          await confirmarEntrega(receptores[0], pasajeroDoc.id, pasajeroData);
-        } else {
-          // Mostrar modal para seleccionar receptor
-          setModalSeleccionarReceptorVisible(true);
-        }
+        // Siempre mostrar modal para seleccionar receptor
+        setModalSeleccionarReceptorVisible(true);
+        setMostrarInputOtraPersona(false);
+        setNombreOtraPersona('');
       } else {
         Alert.alert('Error', 'No se encontró el registro del pasajero.');
       }
@@ -2718,8 +3078,34 @@ export default function PaginaPrincipalConductor() {
         { merge: true }
       );
       
-      // Crear alerta para el receptor
-      console.log('📤 Creando alerta de Entregado:', {
+      // Obtener el RUT del apoderado para enviar la notificación SIEMPRE al apoderado
+      const rutApoderado = (pasajeroData.rutApoderado || '').toString().trim();
+      
+      if (!rutApoderado) {
+        Alert.alert('Error', 'No se encontró el RUT del apoderado para enviar la notificación.');
+        return;
+      }
+      
+      // Verificar si es entrega al colegio
+      const esEntregaAlColegio = receptor.tipo === 'Colegio' || esRutaAlColegio();
+      
+      // Formatear descripción siempre indicando el tipo de receptor claramente
+      let descripcion = '';
+      if (esEntregaAlColegio) {
+        descripcion = `${siguienteNino.nombreHijo} ha sido entregado al colegio el ${fechaHora}`;
+      } else if (receptor.tipo === 'Apoderado') {
+        descripcion = `${siguienteNino.nombreHijo} ha sido entregado a ${receptor.nombre} (Apoderado) el ${fechaHora}`;
+      } else if (receptor.tipo === 'Tutor') {
+        descripcion = `${siguienteNino.nombreHijo} ha sido entregado a ${receptor.nombre} (Tutor) el ${fechaHora}`;
+      } else if (receptor.tipo === 'Otra persona') {
+        descripcion = `${siguienteNino.nombreHijo} ha sido entregado a ${receptor.nombre} (Otra persona) el ${fechaHora}`;
+      } else {
+        descripcion = `${siguienteNino.nombreHijo} ha sido entregado a ${receptor.nombre} (${receptor.tipo}) el ${fechaHora}`;
+      }
+      
+      // Crear alerta SIEMPRE para el apoderado, independientemente de quién sea el receptor
+      console.log('📤 Creando alerta de Entregado para apoderado:', {
+        rutApoderado: rutApoderado,
         rutReceptor: receptor.rut,
         nombreReceptor: receptor.nombre,
         tipoReceptor: receptor.tipo,
@@ -2727,31 +3113,41 @@ export default function PaginaPrincipalConductor() {
         patenteFurgon: pasajeroData.patenteFurgon,
       });
       
+      // SIEMPRE enviar la notificación al apoderado
       await addDoc(collection(db, 'Alertas'), {
         tipo: 'Entregado',
         tipoAlerta: 'Entregado',
-        descripcion: `${siguienteNino.nombreHijo} ha sido entregado a ${receptor.nombre} (${receptor.tipo}) el ${fechaHora}`,
-        rutDestinatario: receptor.rut,
+        descripcion: descripcion,
+        rutDestinatario: rutApoderado, // SIEMPRE al apoderado
         rutHijo: siguienteNino.rutHijo,
         nombreHijo: siguienteNino.nombreHijo,
         patenteFurgon: pasajeroData.patenteFurgon || '',
         fechaHoraEntrega: fechaHora,
-        receptorEntrega: receptor.nombre,
-        tipoReceptorEntrega: receptor.tipo,
+        receptorEntrega: esEntregaAlColegio ? 'Colegio' : receptor.nombre,
+        tipoReceptorEntrega: esEntregaAlColegio ? 'Colegio' : receptor.tipo,
         creadoEn: serverTimestamp(),
         leida: false,
       });
       
-      console.log('✅ Alerta de Entregado creada para', receptor.tipo);
+      console.log('✅ Alerta de Entregado creada para apoderado:', rutApoderado, 'Receptor:', esEntregaAlColegio ? 'Colegio' : receptor.tipo);
       
-      // Cerrar modal si está abierto
+      // Cerrar modal si está abierto y resetear estados
       setModalSeleccionarReceptorVisible(false);
+      setMostrarInputOtraPersona(false);
+      setNombreOtraPersona('');
       
       // Mostrar mensaje de confirmación
-      Alert.alert(
-        'Entregado',
-        `${siguienteNino.nombreHijo} ha sido entregado a ${receptor.nombre} (${receptor.tipo}).`
-      );
+      if (esEntregaAlColegio) {
+        Alert.alert(
+          'Entregado',
+          `${siguienteNino.nombreHijo} ha sido entregado al colegio.`
+        );
+      } else {
+        Alert.alert(
+          'Entregado',
+          `${siguienteNino.nombreHijo} ha sido entregado a ${receptor.nombre} (${receptor.tipo}).`
+        );
+      }
     } catch (error) {
       console.error('Error al confirmar entrega:', error);
       Alert.alert('Error', 'No se pudo confirmar la entrega.');
@@ -3297,6 +3693,22 @@ export default function PaginaPrincipalConductor() {
           </TouchableHighlight>
           <TouchableHighlight
             style={[
+              styles.routeButton,
+              generandoRuta && styles.routeButtonDisabled
+            ]}
+            underlayColor="#0c5c4e"
+            onPress={() => {
+              console.log('🔘 Botón Generar Ruta al Colegio presionado');
+              handleGenerarRutaAlColegio();
+            }}
+            disabled={generandoRuta}
+          >
+            <Text style={styles.routeButtonText}>
+              {generandoRuta ? 'Generando...' : 'Ruta al Colegio'}
+            </Text>
+          </TouchableHighlight>
+          <TouchableHighlight
+            style={[
               styles.terminarRutaButton,
               !rutaGenerada && styles.terminarRutaButtonDisabled,
             ]}
@@ -3348,13 +3760,21 @@ export default function PaginaPrincipalConductor() {
         visible={modalSeleccionarReceptorVisible}
         transparent={true}
         animationType="slide"
-        onRequestClose={() => setModalSeleccionarReceptorVisible(false)}
+        onRequestClose={() => {
+          setModalSeleccionarReceptorVisible(false);
+          setMostrarInputOtraPersona(false);
+          setNombreOtraPersona('');
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Seleccionar Receptor</Text>
-              <Pressable onPress={() => setModalSeleccionarReceptorVisible(false)}>
+              <Pressable onPress={() => {
+                setModalSeleccionarReceptorVisible(false);
+                setMostrarInputOtraPersona(false);
+                setNombreOtraPersona('');
+              }}>
                 <Ionicons name="close" size={28} color="#127067" />
               </Pressable>
             </View>
@@ -3367,9 +3787,58 @@ export default function PaginaPrincipalConductor() {
                   <Text style={styles.emptyReceptoresText}>Cargando receptores...</Text>
                 </View>
               ) : (
-                receptoresDisponibles.map((receptor, index) => (
+                <>
+                  {receptoresDisponibles.map((receptor, index) => (
+                    <TouchableHighlight
+                      key={index}
+                      style={styles.receptorItem}
+                      underlayColor="#E6F7F5"
+                      onPress={async () => {
+                        if (!siguienteNino) {
+                          Alert.alert('Error', 'No hay niño seleccionado.');
+                          return;
+                        }
+                        try {
+                          const listaPasajerosRef = collection(db, 'lista_pasajeros');
+                          const pasajeroQuery = query(
+                            listaPasajerosRef,
+                            where('rutHijo', '==', siguienteNino.rutHijo),
+                            where('rutConductor', '==', rutConductor),
+                            limit(1)
+                          );
+                          const pasajeroSnap = await getDocs(pasajeroQuery);
+                          if (!pasajeroSnap.empty) {
+                            const pasajeroDoc = pasajeroSnap.docs[0];
+                            const pasajeroData = pasajeroDoc.data();
+                            await confirmarEntrega(receptor, pasajeroDoc.id, pasajeroData);
+                          } else {
+                            Alert.alert('Error', 'No se encontró el registro del pasajero.');
+                          }
+                        } catch (error) {
+                          console.error('Error al seleccionar receptor:', error);
+                          Alert.alert('Error', 'No se pudo procesar la selección.');
+                        }
+                      }}
+                    >
+                      <View style={styles.receptorContent}>
+                        <View style={styles.receptorIconContainer}>
+                          <Ionicons 
+                            name={receptor.tipo === 'Apoderado' ? 'person' : 'people'} 
+                            size={24} 
+                            color="#127067" 
+                          />
+                        </View>
+                        <View style={styles.receptorInfo}>
+                          <Text style={styles.receptorNombre}>{receptor.nombre}</Text>
+                          <Text style={styles.receptorTipo}>{receptor.tipo}</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={20} color="#999" />
+                      </View>
+                    </TouchableHighlight>
+                  ))}
+                  
+                  {/* Opción "Colegio" */}
                   <TouchableHighlight
-                    key={index}
                     style={styles.receptorItem}
                     underlayColor="#E6F7F5"
                     onPress={async () => {
@@ -3389,12 +3858,16 @@ export default function PaginaPrincipalConductor() {
                         if (!pasajeroSnap.empty) {
                           const pasajeroDoc = pasajeroSnap.docs[0];
                           const pasajeroData = pasajeroDoc.data();
-                          await confirmarEntrega(receptor, pasajeroDoc.id, pasajeroData);
+                          await confirmarEntrega(
+                            { rut: 'COLEGIO', nombre: 'Colegio', tipo: 'Colegio' },
+                            pasajeroDoc.id,
+                            pasajeroData
+                          );
                         } else {
                           Alert.alert('Error', 'No se encontró el registro del pasajero.');
                         }
                       } catch (error) {
-                        console.error('Error al seleccionar receptor:', error);
+                        console.error('Error al seleccionar colegio:', error);
                         Alert.alert('Error', 'No se pudo procesar la selección.');
                       }
                     }}
@@ -3402,21 +3875,112 @@ export default function PaginaPrincipalConductor() {
                     <View style={styles.receptorContent}>
                       <View style={styles.receptorIconContainer}>
                         <Ionicons 
-                          name={receptor.tipo === 'Apoderado' ? 'person' : 'people'} 
+                          name="school" 
                           size={24} 
                           color="#127067" 
                         />
                       </View>
                       <View style={styles.receptorInfo}>
-                        <Text style={styles.receptorNombre}>{receptor.nombre}</Text>
-                        <Text style={styles.receptorTipo}>{receptor.tipo}</Text>
+                        <Text style={styles.receptorNombre}>Colegio</Text>
+                        <Text style={styles.receptorTipo}>Entregar al colegio</Text>
                       </View>
                       <Ionicons name="chevron-forward" size={20} color="#999" />
                     </View>
                   </TouchableHighlight>
-                ))
+                  
+                  {/* Opción "Otra persona" */}
+                  <TouchableHighlight
+                    style={styles.receptorItem}
+                    underlayColor="#E6F7F5"
+                    onPress={() => {
+                      setMostrarInputOtraPersona(true);
+                    }}
+                  >
+                    <View style={styles.receptorContent}>
+                      <View style={styles.receptorIconContainer}>
+                        <Ionicons 
+                          name="person-add" 
+                          size={24} 
+                          color="#127067" 
+                        />
+                      </View>
+                      <View style={styles.receptorInfo}>
+                        <Text style={styles.receptorNombre}>Otra persona</Text>
+                        <Text style={styles.receptorTipo}>Especificar nombre</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color="#999" />
+                    </View>
+                  </TouchableHighlight>
+                </>
               )}
             </ScrollView>
+            
+            {/* Input para otra persona */}
+            {mostrarInputOtraPersona && (
+              <View style={styles.inputOtraPersonaContainer}>
+                <Text style={styles.inputOtraPersonaLabel}>Nombre de la persona:</Text>
+                <TextInput
+                  style={styles.inputOtraPersona}
+                  placeholder="Ingrese el nombre completo"
+                  value={nombreOtraPersona}
+                  onChangeText={setNombreOtraPersona}
+                  autoFocus={true}
+                />
+                <View style={styles.inputOtraPersonaButtons}>
+                  <Pressable
+                    style={[styles.inputOtraPersonaButton, styles.inputOtraPersonaButtonCancelar]}
+                    onPress={() => {
+                      setMostrarInputOtraPersona(false);
+                      setNombreOtraPersona('');
+                    }}
+                  >
+                    <Text style={styles.inputOtraPersonaButtonTextCancelar}>Cancelar</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.inputOtraPersonaButton, styles.inputOtraPersonaButtonConfirmar]}
+                    onPress={async () => {
+                      if (!nombreOtraPersona.trim()) {
+                        Alert.alert('Error', 'Por favor ingrese el nombre de la persona.');
+                        return;
+                      }
+                      if (!siguienteNino) {
+                        Alert.alert('Error', 'No hay niño seleccionado.');
+                        return;
+                      }
+                      try {
+                        const listaPasajerosRef = collection(db, 'lista_pasajeros');
+                        const pasajeroQuery = query(
+                          listaPasajerosRef,
+                          where('rutHijo', '==', siguienteNino.rutHijo),
+                          where('rutConductor', '==', rutConductor),
+                          limit(1)
+                        );
+                        const pasajeroSnap = await getDocs(pasajeroQuery);
+                        if (!pasajeroSnap.empty) {
+                          const pasajeroDoc = pasajeroSnap.docs[0];
+                          const pasajeroData = pasajeroDoc.data();
+                          const receptorOtraPersona = {
+                            rut: '',
+                            nombre: nombreOtraPersona.trim(),
+                            tipo: 'Otra persona'
+                          };
+                          await confirmarEntrega(receptorOtraPersona, pasajeroDoc.id, pasajeroData);
+                          setMostrarInputOtraPersona(false);
+                          setNombreOtraPersona('');
+                        } else {
+                          Alert.alert('Error', 'No se encontró el registro del pasajero.');
+                        }
+                      } catch (error) {
+                        console.error('Error al confirmar entrega a otra persona:', error);
+                        Alert.alert('Error', 'No se pudo procesar la entrega.');
+                      }
+                    }}
+                  >
+                    <Text style={styles.inputOtraPersonaButtonTextConfirmar}>Confirmar</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
           </View>
         </View>
       </Modal>
@@ -4022,5 +4586,57 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#999',
     fontStyle: 'italic',
+  },
+  inputOtraPersonaContainer: {
+    marginTop: 20,
+    padding: 16,
+    backgroundColor: '#F5F7F8',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#127067',
+  },
+  inputOtraPersonaLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  inputOtraPersona: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    marginBottom: 12,
+  },
+  inputOtraPersonaButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  inputOtraPersonaButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inputOtraPersonaButtonCancelar: {
+    backgroundColor: '#6c757d',
+  },
+  inputOtraPersonaButtonConfirmar: {
+    backgroundColor: '#127067',
+  },
+  inputOtraPersonaButtonTextCancelar: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  inputOtraPersonaButtonTextConfirmar: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

@@ -9,6 +9,7 @@ import {
   Pressable,
   Alert,
   ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { db } from '@/firebaseConfig';
@@ -19,6 +20,8 @@ import {
   query,
   where,
   serverTimestamp,
+  doc,
+  updateDoc,
 } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncRutActivo } from '@/hooks/use-sync-rut-activo';
@@ -53,6 +56,7 @@ export default function PublicarFurgonScreen() {
 
   const [nombre, setNombre] = useState('');
   const [colegio, setColegio] = useState('');
+  const [direccionColegio, setDireccionColegio] = useState('');
   const [precio, setPrecio] = useState('');
   const [regionSeleccionada, setRegionSeleccionada] = useState('');
   const [comuna, setComuna] = useState('');
@@ -62,10 +66,13 @@ export default function PublicarFurgonScreen() {
   const [rutUsuario, setRutUsuario] = useState('');
   const [loading, setLoading] = useState(false);
   const [cupos, setCupos] = useState('');
+  const [furgonExistente, setFurgonExistente] = useState<any>(null);
+  const [modoEdicion, setModoEdicion] = useState(false);
 
   const [errores, setErrores] = useState({
     nombre: '',
     colegio: '',
+    direccionColegio: '',
     precio: '',
     region: '',
     comuna: '',
@@ -83,6 +90,7 @@ export default function PublicarFurgonScreen() {
         }
         setRutUsuario(rutGuardado);
 
+        // Cargar vehículos siempre (necesarios para el formulario)
         const vehiculosRef = collection(db, 'Vehiculos');
         const q = query(vehiculosRef, where('rutUsuario', '==', rutGuardado));
         const snapshot = await getDocs(q);
@@ -100,6 +108,24 @@ export default function PublicarFurgonScreen() {
         const listaPatentes = listaVehiculos.map((v) => v.patente);
         setVehiculos(listaVehiculos);
         setPatentes(listaPatentes);
+
+        // Verificar si ya tiene un furgón promocionado
+        const furgonesRef = collection(db, 'Furgones');
+        const furgonesQuery = query(furgonesRef, where('rutUsuario', '==', rutGuardado));
+        const furgonesSnapshot = await getDocs(furgonesQuery);
+        
+        if (!furgonesSnapshot.empty) {
+          const furgonData = furgonesSnapshot.docs[0];
+          const data = furgonData.data();
+          setFurgonExistente({
+            id: furgonData.id,
+            ...data,
+          });
+          // No cargar el formulario si ya tiene un furgón (a menos que esté en modo edición)
+          return;
+        }
+
+        // Si no tiene furgón, configurar valores por defecto
         if (listaPatentes.length > 0) {
           const primeraPatente = listaPatentes[0];
           setPatenteSeleccionada(primeraPatente);
@@ -112,19 +138,100 @@ export default function PublicarFurgonScreen() {
           setPatenteSeleccionada('');
         }
       } catch (error) {
-        console.error('Error al obtener patentes:', error);
-        Alert.alert('Error', 'No se pudieron cargar los vehículos.');
+        console.error('Error al obtener datos:', error);
+        Alert.alert('Error', 'No se pudieron cargar los datos.');
       }
     };
 
     obtenerDatos();
   }, []);
 
+  const cargarDatosFurgonExistente = () => {
+    if (!furgonExistente) return;
+    
+    // Limpiar errores previos
+    setErrores({
+      nombre: '',
+      colegio: '',
+      direccionColegio: '',
+      precio: '',
+      region: '',
+      comuna: '',
+      patente: '',
+      cupos: '',
+    });
+    
+    // Cargar datos del furgón existente
+    setNombre(furgonExistente.nombre || '');
+    setColegio(furgonExistente.colegio || '');
+    setDireccionColegio(furgonExistente.direccionColegio || '');
+    setPrecio(furgonExistente.precio || '');
+    setRegionSeleccionada(furgonExistente.region || '');
+    setComuna(furgonExistente.comuna || '');
+    setPatenteSeleccionada(furgonExistente.patente || '');
+    setCupos(furgonExistente.cupos ? furgonExistente.cupos.toString() : '');
+    setModoEdicion(true);
+  };
+
+  const manejarEditarFurgon = async () => {
+    const cuposNumero = parseInt(cupos, 10);
+    const nuevosErrores = {
+      nombre: !nombre ? 'Ingresa el nombre' : '',
+      colegio: !colegio ? 'Ingresa el colegio' : '',
+      direccionColegio: !direccionColegio ? 'Ingresa la dirección del colegio' : '',
+      precio: !precio ? 'Ingresa el precio' : '',
+      region: !regionSeleccionada ? 'Selecciona una región' : '',
+      comuna: !comuna ? 'Selecciona una comuna' : '',
+      patente: !patenteSeleccionada ? 'Selecciona una patente' : '',
+      cupos: !cupos ? 'Ingresa la cantidad de cupos' : 
+             isNaN(cuposNumero) || cuposNumero < 1 || cuposNumero > 30 
+             ? 'Los cupos deben ser un número entre 1 y 30' : '',
+    };
+
+    setErrores(nuevosErrores);
+
+    if (Object.values(nuevosErrores).some((msg) => msg !== '')) return;
+
+    if (!furgonExistente || !furgonExistente.id) {
+      Alert.alert('Error', 'No se encontró el furgón a editar.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      await updateDoc(doc(db, 'Furgones', furgonExistente.id), {
+        nombre,
+        colegio,
+        direccionColegio,
+        precio,
+        region: regionSeleccionada,
+        comuna,
+        patente: patenteSeleccionada,
+        cupos: cuposNumero,
+        actualizadoEn: serverTimestamp(),
+      });
+
+      Alert.alert('✅ Éxito', 'Furgón actualizado correctamente.');
+      setModoEdicion(false);
+      setFurgonExistente(null);
+      // Recargar datos
+      router.replace('/(tabs)/conductor/promocionar-furgon');
+    } catch (error) {
+      console.error('Error al actualizar furgón:', error);
+      Alert.alert('Error', 'No se pudo actualizar la información.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
   const manejarPublicarFurgon = async () => {
     const cuposNumero = parseInt(cupos, 10);
     const nuevosErrores = {
       nombre: !nombre ? 'Ingresa el nombre' : '',
       colegio: !colegio ? 'Ingresa el colegio' : '',
+      direccionColegio: !direccionColegio ? 'Ingresa la dirección del colegio' : '',
       precio: !precio ? 'Ingresa el precio' : '',
       region: !regionSeleccionada ? 'Selecciona una región' : '',
       comuna: !comuna ? 'Selecciona una comuna' : '',
@@ -149,6 +256,7 @@ export default function PublicarFurgonScreen() {
       await addDoc(collection(db, 'Furgones'), {
         nombre,
         colegio,
+        direccionColegio,
         precio,
         region: regionSeleccionada,
         comuna,
@@ -176,21 +284,101 @@ export default function PublicarFurgonScreen() {
     }
   };
 
+  // Si tiene un furgón existente y no está en modo edición, mostrar opciones
+  if (furgonExistente && !modoEdicion) {
+    return (
+      <View style={styles.container}>
+        <Pressable style={styles.backButton} onPress={handleVolver}>
+          <Ionicons name="arrow-back" size={28} color="#127067" />
+        </Pressable>
+
+        <ScrollView 
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.title}>Furgón Promocionado</Text>
+
+          <View style={styles.profileImageContainer}>
+            <Image
+              source={require('@/assets/images/user_icon.png')}
+              style={styles.profileImage}
+              contentFit="cover"
+            />
+          </View>
+
+          <View style={styles.furgonInfoContainer}>
+            <Text style={styles.furgonInfoTitle}>Información del Furgón</Text>
+            <View style={styles.furgonInfoItem}>
+              <Text style={styles.furgonInfoLabel}>Nombre:</Text>
+              <Text style={styles.furgonInfoValue}>{furgonExistente.nombre || 'N/A'}</Text>
+            </View>
+            <View style={styles.furgonInfoItem}>
+              <Text style={styles.furgonInfoLabel}>Colegio:</Text>
+              <Text style={styles.furgonInfoValue}>{furgonExistente.colegio || 'N/A'}</Text>
+            </View>
+            {furgonExistente.direccionColegio && (
+              <View style={styles.furgonInfoItem}>
+                <Text style={styles.furgonInfoLabel}>Dirección:</Text>
+                <Text style={styles.furgonInfoValue}>{furgonExistente.direccionColegio}</Text>
+              </View>
+            )}
+            <View style={styles.furgonInfoItem}>
+              <Text style={styles.furgonInfoLabel}>Precio:</Text>
+              <Text style={styles.furgonInfoValue}>${furgonExistente.precio || 'N/A'} CLP</Text>
+            </View>
+            <View style={styles.furgonInfoItem}>
+              <Text style={styles.furgonInfoLabel}>Región:</Text>
+              <Text style={styles.furgonInfoValue}>{furgonExistente.region || 'N/A'}</Text>
+            </View>
+            <View style={styles.furgonInfoItem}>
+              <Text style={styles.furgonInfoLabel}>Comuna:</Text>
+              <Text style={styles.furgonInfoValue}>{furgonExistente.comuna || 'N/A'}</Text>
+            </View>
+            <View style={styles.furgonInfoItem}>
+              <Text style={styles.furgonInfoLabel}>Patente:</Text>
+              <Text style={styles.furgonInfoValue}>{furgonExistente.patente || 'N/A'}</Text>
+            </View>
+            <View style={styles.furgonInfoItem}>
+              <Text style={styles.furgonInfoLabel}>Cupos:</Text>
+              <Text style={styles.furgonInfoValue}>{furgonExistente.cupos || 'N/A'}</Text>
+            </View>
+          </View>
+
+          <View style={styles.buttonsContainer}>
+            <Pressable 
+              style={[styles.button, styles.buttonEditar]} 
+              onPress={cargarDatosFurgonExistente}
+              disabled={loading}
+            >
+              <Ionicons name="create-outline" size={20} color="#fff" />
+              <Text style={styles.buttonText}>Editar</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Pressable style={styles.backButton} onPress={handleVolver}>
         <Ionicons name="arrow-back" size={28} color="#127067" />
       </Pressable>
 
-      <Text style={styles.title}>Publicar Furgón</Text>
+      <ScrollView 
+        contentContainerStyle={styles.scrollFormContent}
+        showsVerticalScrollIndicator={true}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Text style={styles.title}>{modoEdicion ? 'Editar Furgón' : 'Publicar Furgón'}</Text>
 
-      <View style={styles.profileImageContainer}>
-        <Image
-          source={require('@/assets/images/user_icon.png')}
-          style={styles.profileImage}
-          contentFit="cover"
-        />
-      </View>
+        <View style={styles.profileImageContainer}>
+          <Image
+            source={require('@/assets/images/user_icon.png')}
+            style={styles.profileImage}
+            contentFit="cover"
+          />
+        </View>
 
       <TextInput
         style={styles.input}
@@ -200,6 +388,32 @@ export default function PublicarFurgonScreen() {
       />
       {errores.nombre ? <Text style={styles.errorText}>{errores.nombre}</Text> : null}
 
+      <Text style={styles.label}>Selecciona patente</Text>
+      <View style={styles.pickerContainer}>
+        <Picker
+          selectedValue={patenteSeleccionada}
+          onValueChange={(value) => {
+            setPatenteSeleccionada(value);
+            setErrores((prev) => ({ ...prev, patente: '' }));
+            // Cargar cupos del vehículo seleccionado
+            const vehiculoSeleccionado = vehiculos.find((v) => v.patente === value);
+            if (vehiculoSeleccionado?.cupos) {
+              setCupos(vehiculoSeleccionado.cupos.toString());
+            }
+          }}
+          style={styles.picker}
+        >
+          {patentes.length > 0 ? (
+            patentes.map((patente, index) => (
+              <Picker.Item key={index} label={patente} value={patente} />
+            ))
+          ) : (
+            <Picker.Item label="No hay vehículos registrados" value="" />
+          )}
+        </Picker>
+      </View>
+      {errores.patente ? <Text style={styles.errorText}>{errores.patente}</Text> : null}
+
       <TextInput
         style={styles.input}
         placeholder="Colegio"
@@ -207,6 +421,24 @@ export default function PublicarFurgonScreen() {
         onChangeText={setColegio}
       />
       {errores.colegio ? <Text style={styles.errorText}>{errores.colegio}</Text> : null}
+
+      <TextInput
+        style={styles.input}
+        placeholder="Dirección del colegio"
+        value={direccionColegio}
+        onChangeText={setDireccionColegio}
+      />
+      {errores.direccionColegio ? <Text style={styles.errorText}>{errores.direccionColegio}</Text> : null}
+
+      <TextInput
+        style={styles.input}
+        placeholder="Cupos disponibles (1-30)"
+        value={cupos}
+        onChangeText={setCupos}
+        keyboardType="numeric"
+        maxLength={3}
+      />
+      {errores.cupos ? <Text style={styles.errorText}>{errores.cupos}</Text> : null}
 
       <TextInput
         style={styles.input}
@@ -260,61 +492,59 @@ export default function PublicarFurgonScreen() {
         </>
       )}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Cupos disponibles (1-30)"
-        value={cupos}
-        onChangeText={setCupos}
-        keyboardType="numeric"
-        maxLength={3}
-      />
-      {errores.cupos ? <Text style={styles.errorText}>{errores.cupos}</Text> : null}
-
-      <Text style={styles.label}>Selecciona patente</Text>
-      <View style={styles.pickerContainer}>
-        <Picker
-          selectedValue={patenteSeleccionada}
-          onValueChange={(value) => {
-            setPatenteSeleccionada(value);
-            // Cargar cupos del vehículo seleccionado
-            const vehiculoSeleccionado = vehiculos.find((v) => v.patente === value);
-            if (vehiculoSeleccionado?.cupos) {
-              setCupos(vehiculoSeleccionado.cupos.toString());
-            } else {
-              setCupos('');
-            }
-          }}
-          style={styles.picker}
-        >
-          {patentes.length > 0 ? (
-            patentes.map((patente, index) => (
-              <Picker.Item key={index} label={patente} value={patente} />
-            ))
+      {modoEdicion ? (
+        <View style={styles.buttonsContainer}>
+          <Pressable 
+            style={[styles.button, styles.buttonCancelar]} 
+            onPress={() => {
+              setModoEdicion(false);
+              setFurgonExistente(null);
+              router.replace('/(tabs)/conductor/promocionar-furgon');
+            }}
+            disabled={loading}
+          >
+            <Text style={styles.buttonText}>Cancelar</Text>
+          </Pressable>
+          <Pressable 
+            style={[styles.button, styles.buttonGuardar]} 
+            onPress={manejarEditarFurgon} 
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.buttonText}>Guardar Cambios</Text>
+            )}
+          </Pressable>
+        </View>
+      ) : (
+        <Pressable style={styles.button} onPress={manejarPublicarFurgon} disabled={loading}>
+          {loading ? (
+            <ActivityIndicator color="#fff" />
           ) : (
-            <Picker.Item label="No hay vehículos registrados" value="" />
+            <Text style={styles.buttonText}>Publicar Furgón</Text>
           )}
-        </Picker>
-      </View>
-      {errores.patente ? <Text style={styles.errorText}>{errores.patente}</Text> : null}
-
-      <Pressable style={styles.button} onPress={manejarPublicarFurgon} disabled={loading}>
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.buttonText}>Publicar</Text>
-        )}
-      </Pressable>
+        </Pressable>
+      )}
+      </ScrollView>
     </View>
   );
 }
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#ffffff',
+  },
+  scrollContent: {
     padding: 20,
     paddingTop: 100, // espacio para flecha y título
-    backgroundColor: '#ffffff',
     alignItems: 'center',
-    justifyContent: 'center',
+    paddingBottom: 40,
+  },
+  scrollFormContent: {
+    padding: 20,
+    paddingTop: 100, // espacio para flecha y título
+    paddingBottom: 40,
   },
   backButton: {
     position: 'absolute',
@@ -395,5 +625,61 @@ const styles = StyleSheet.create({
     marginBottom: 5,
     alignSelf: 'flex-start',
     marginLeft: 25,
+  },
+  furgonInfoContainer: {
+    width: '90%',
+    backgroundColor: '#F5F7F8',
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#127067',
+  },
+  furgonInfoTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#127067',
+    marginBottom: 15,
+    textAlign: 'center',
+  },
+  furgonInfoItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  furgonInfoLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    flex: 1,
+  },
+  furgonInfoValue: {
+    fontSize: 14,
+    color: '#666',
+    flex: 1,
+    textAlign: 'right',
+  },
+  buttonsContainer: {
+    flexDirection: 'row',
+    gap: 15,
+    width: '90%',
+    justifyContent: 'center',
+  },
+  buttonEditar: {
+    backgroundColor: '#127067',
+    flex: 1,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+  },
+  buttonCancelar: {
+    backgroundColor: '#6c757d',
+    flex: 1,
+  },
+  buttonGuardar: {
+    backgroundColor: '#127067',
+    flex: 1,
   },
 });

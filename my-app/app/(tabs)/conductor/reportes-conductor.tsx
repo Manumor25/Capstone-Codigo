@@ -359,7 +359,7 @@ export default function ReportesConductorScreen() {
   }, [viajes, alertasUrgencia]);
 
   useEffect(() => {
-    const cargarViajes = async () => {
+    const cargarDatos = async () => {
       try {
         const rutGuardado = await AsyncStorage.getItem('rutUsuario');
         if (!rutGuardado) {
@@ -370,9 +370,8 @@ export default function ReportesConductorScreen() {
         setRutConductor(rutGuardado);
         const rutNormalizado = normalizarRut(rutGuardado);
 
+        // 1. Cargar viajes del conductor
         const historialRef = collection(db, 'historial_viajes');
-        
-        // Obtener todos los viajes del conductor
         const viajesList: Viaje[] = [];
         
         // Intentar consulta con RUT normalizado
@@ -458,14 +457,123 @@ export default function ReportesConductorScreen() {
         }
 
         setViajes(viajesList);
+
+        // 2. Cargar alertas de urgencia del conductor
+        const alertasList: AlertaUrgencia[] = [];
+        
+        try {
+          // Obtener patentes de los furgones del conductor
+          const furgonesRef = collection(db, 'Furgones');
+          const furgonesQuery = query(furgonesRef, where('rutUsuario', '==', rutGuardado));
+          const furgonesSnapshot = await getDocs(furgonesQuery);
+          
+          const patentesConductor = new Set<string>();
+          furgonesSnapshot.forEach((doc) => {
+            const data = doc.data();
+            const patente = (data.patente || '').toString().trim().toUpperCase();
+            if (patente) {
+              patentesConductor.add(patente);
+            }
+          });
+
+          // También obtener patentes de los viajes realizados
+          viajesList.forEach((viaje) => {
+            if (viaje.patenteFurgon && viaje.patenteFurgon !== 'Sin patente') {
+              patentesConductor.add(viaje.patenteFurgon.toUpperCase().trim());
+            }
+          });
+
+          // Buscar alertas de urgencia relacionadas con este conductor
+          const alertasRef = collection(db, 'Alertas');
+          
+          // Buscar alertas por patenteFurgon
+          if (patentesConductor.size > 0) {
+            for (const patente of patentesConductor) {
+              try {
+                const alertasQuery = query(
+                  alertasRef,
+                  where('tipoAlerta', '==', 'Urgencia'),
+                  where('patenteFurgon', '==', patente)
+                );
+                const alertasSnapshot = await getDocs(alertasQuery);
+                
+                alertasSnapshot.forEach((doc) => {
+                  const data = doc.data();
+                  // Evitar duplicados
+                  if (!alertasList.find(a => a.id === doc.id)) {
+                    alertasList.push({
+                      id: doc.id,
+                      fecha: data.creadoEn || data.fecha,
+                      descripcion: data.descripcion || 'Sin descripción',
+                      patenteFurgon: data.patenteFurgon || patente,
+                    });
+                  }
+                });
+              } catch (error) {
+                console.error('Error al cargar alertas por patente:', error);
+              }
+            }
+          }
+
+          // También buscar alertas donde el rutConductor esté en los parámetros
+          try {
+            // Nota: Firestore no permite consultas anidadas directamente en parámetros
+            // Por lo tanto, obtenemos todas las alertas de urgencia y las filtramos
+            const todasAlertasQuery = query(
+              alertasRef,
+              where('tipoAlerta', '==', 'Urgencia')
+            );
+            const todasAlertasSnapshot = await getDocs(todasAlertasQuery);
+            
+            todasAlertasSnapshot.forEach((doc) => {
+              const data = doc.data();
+              const parametros = data.parametros || {};
+              const rutConductorEnParametros = parametros.rutConductor || '';
+              const rutConductorNormalizadoEnParametros = normalizarRut(rutConductorEnParametros);
+              
+              // Verificar si el RUT del conductor coincide
+              if (rutConductorNormalizadoEnParametros === rutNormalizado || 
+                  rutConductorEnParametros === rutGuardado ||
+                  rutConductorEnParametros === rutNormalizado) {
+                // Evitar duplicados
+                if (!alertasList.find(a => a.id === doc.id)) {
+                  alertasList.push({
+                    id: doc.id,
+                    fecha: data.creadoEn || data.fecha,
+                    descripcion: data.descripcion || 'Sin descripción',
+                    patenteFurgon: data.patenteFurgon || parametros.patenteFurgon || '',
+                  });
+                }
+              }
+            });
+          } catch (error) {
+            console.error('Error al cargar alertas por RUT en parámetros:', error);
+          }
+
+          // Ordenar alertas por fecha (más recientes primero)
+          alertasList.sort((a, b) => {
+            try {
+              const fechaA = a.fecha?.toDate ? a.fecha.toDate() : new Date(a.fecha || 0);
+              const fechaB = b.fecha?.toDate ? b.fecha.toDate() : new Date(b.fecha || 0);
+              return fechaB.getTime() - fechaA.getTime();
+            } catch {
+              return 0;
+            }
+          });
+
+          setAlertasUrgencia(alertasList);
+        } catch (error) {
+          console.error('Error al cargar alertas de urgencia:', error);
+        }
+
       } catch (error) {
-        console.error('Error al cargar historial:', error);
+        console.error('Error al cargar datos:', error);
       } finally {
         setLoading(false);
       }
     };
 
-    cargarViajes();
+    cargarDatos();
   }, []);
 
   const formatearTiempo = (minutos: number): string => {

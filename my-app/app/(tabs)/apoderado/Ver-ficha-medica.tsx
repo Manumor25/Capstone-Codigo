@@ -13,6 +13,7 @@ import {
     Text,
     View
 } from 'react-native';
+import { Image } from 'expo-image';
 
 interface FichaMedica {
   nombreCompleto: string;
@@ -68,6 +69,7 @@ export default function VerFichaMedicaScreen() {
   const [cargando, setCargando] = useState(true);
   const [fichaMedica, setFichaMedica] = useState<FichaMedica | null>(null);
   const [nombreHijo, setNombreHijo] = useState('');
+  const [fotoHijo, setFotoHijo] = useState<string | null>(null);
 
   useEffect(() => {
     const cargarFichaMedica = async () => {
@@ -90,6 +92,13 @@ export default function VerFichaMedicaScreen() {
 
         const data = snapshot.data() || {};
         setNombreHijo(`${data.nombres || ''} ${data.apellidos || ''}`.trim());
+
+        // Cargar foto del hijo si existe
+        if (data.fotoHijo && data.fotoHijo.base64) {
+          const mimeType = data.fotoHijo.mimeType || 'image/jpeg';
+          const fotoUri = `data:${mimeType};base64,${data.fotoHijo.base64}`;
+          setFotoHijo(fotoUri);
+        }
 
         if (data.fichaMedica) {
           setFichaMedica(data.fichaMedica);
@@ -173,6 +182,17 @@ export default function VerFichaMedicaScreen() {
           {/* Datos del Estudiante */}
           <View style={styles.tableSection}>
             <Text style={styles.tableSectionTitle}>Datos del Estudiante</Text>
+            
+            {/* Foto del niño */}
+            {fotoHijo && (
+              <View style={styles.fotoContainer}>
+                <Image
+                  source={{ uri: fotoHijo }}
+                  style={styles.fotoHijo}
+                  contentFit="cover"
+                />
+              </View>
+            )}
             
             <View style={styles.tableRow}>
               <Text style={styles.tableLabel}>Nombre Completo:</Text>
@@ -428,6 +448,18 @@ const styles = StyleSheet.create({
   tableValueMultiline: {
     textAlign: 'left',
     marginTop: 5,
+  },
+  fotoContainer: {
+    alignItems: 'center',
+    marginBottom: 20,
+    marginTop: 10,
+  },
+  fotoHijo: {
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    borderWidth: 3,
+    borderColor: '#127067',
   },
 });
 

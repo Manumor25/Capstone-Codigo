@@ -25,10 +25,11 @@ if (getApps().length === 0) {
   app = getApps()[0];
 }
 
-// Initialize Firestore con configuración específica para web
+// Initialize Firestore con configuración específica para web y Android
 // Esto previene el error "INTERNAL ASSERTION FAILED: Unexpected state"
 let db: Firestore;
 const isWeb = typeof window !== 'undefined';
+const isAndroid = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
 
 try {
   if (isWeb) {
@@ -44,13 +45,26 @@ try {
       db = getFirestore(app);
     }
   } else {
-    // En móvil, usar getFirestore normalmente
-    db = getFirestore(app);
+    // En móvil (Android/iOS), usar getFirestore con configuración para mejor rendimiento
+    try {
+      db = getFirestore(app);
+      // Verificar que Firestore esté funcionando correctamente
+      console.log('Firestore inicializado correctamente para móvil');
+    } catch (error) {
+      console.error('Error al inicializar Firestore en móvil:', error);
+      // Fallback: intentar obtener la instancia existente
+      db = getFirestore(app);
+    }
   }
 } catch (error) {
-  console.error('Error al inicializar Firestore:', error);
-  // Fallback: intentar obtener la instancia existente
-  db = getFirestore(app);
+  console.error('Error crítico al inicializar Firestore:', error);
+  // Último fallback: intentar obtener la instancia existente
+  try {
+    db = getFirestore(app);
+  } catch (fallbackError) {
+    console.error('Error en fallback de Firestore:', fallbackError);
+    throw new Error('No se pudo inicializar Firestore. Verifica tu conexión a internet.');
+  }
 }
 
 // Initialize Firebase Storage

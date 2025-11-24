@@ -7,7 +7,6 @@
     "icon": "./assets/images/Furgo_Truck.png",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
-    // "newArchEnabled": true,  // <-- 1. BORRADO DE AQUÍ (lugar incorrecto)
     "ios": {
       "supportsTablet": true
     },
@@ -20,9 +19,19 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      // 2. Deja el 'package' que quieras usar (este debe coincidir con el de abajo)
-      "package": "com.joesalgado.myapp"
-      // "compileSdkVersion": 35 // <-- 3. BORRADO DE AQUÍ (se define en el plugin)
+      "package": "com.joesalgado.myapp",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO"
+      ],
+      "blockedPermissions": []
     },
     "web": {
       "output": "static",
@@ -44,15 +53,31 @@
       ],
       [
         "expo-build-properties",
-        // 4. AQUÍ ES DONDE DEBEN IR TODAS LAS CONFIGURACIONES
         {
           "android": {
             "package": "com.joesalgado.myapp",
-            "compileSdkVersion": 35,    // Arreglo error compileSdk
+            "compileSdkVersion": 35,
             "targetSdkVersion": 34,
-            "minSdkVersion": 24,        // Arreglo error minSdk
-            "newArchEnabled": true      // Arreglo error Reanimated/Worklets
+            "minSdkVersion": 24,
+            "newArchEnabled": true,
+            "usesCleartextTraffic": true,
+            "enableProguardInReleaseBuilds": false,
+            "enableShrinkResourcesInReleaseBuilds": false,
+            "packagingOptions": {
+              "pickFirst": [
+                "**/libc++_shared.so",
+                "**/libjsc.so"
+              ]
+            }
           }
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Permitir acceso a la ubicación para mostrar tu posición en el mapa.",
+          "locationAlwaysPermission": "Permitir acceso a la ubicación en segundo plano para rastrear tu ruta.",
+          "locationWhenInUsePermission": "Permitir acceso a la ubicación para mostrar tu posición en el mapa."
         }
       ]
     ],
