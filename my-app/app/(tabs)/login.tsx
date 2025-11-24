@@ -194,9 +194,8 @@ export default function LoginScreen() {
           }
 
           // Redirigir según el rol del usuario
-          // Usar setTimeout para asegurar que AsyncStorage se guarde antes de navegar
-          // En Android, usar un delay mayor y verificar que todo esté listo
-          setTimeout(async () => {
+          // Función auxiliar para navegar de forma segura
+          const navegarSeguro = async () => {
             try {
               // Verificar nuevamente que los datos estén guardados
               const rutVerificadoFinal = await AsyncStorage.getItem('rutUsuario');
@@ -212,75 +211,49 @@ export default function LoginScreen() {
               isProcessingRef.current = false;
               setLoading(false);
               
-              // En Android, usar un enfoque más seguro para la navegación
-              if (Platform.OS === 'android') {
-                // Usar un delay adicional y verificar que el router esté disponible
-                setTimeout(() => {
-                  try {
-                    if (!router) {
-                      throw new Error('Router no está disponible');
-                    }
-                    
-                    if (rolString === 'Conductor') {
-                      console.log('Redirigiendo a página principal del conductor...');
-                      // Usar replace en lugar de push para evitar problemas de stack
-                      router.replace('/(tabs)/conductor/pagina-principal-conductor');
-                    } else if (rolString === 'Apoderado') {
-                      console.log('Redirigiendo a página principal del apoderado...');
-                      router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
-                    } else {
-                      console.error('Rol no válido:', rolString);
-                      Alert.alert('Error', 'Rol de usuario no válido.');
-                    }
-                  } catch (navError: any) {
-                    console.error('Error crítico al navegar en Android:', navError);
-                    const errorMessage = navError?.message || 'Error desconocido al navegar';
-                    Alert.alert(
-                      'Error de navegación', 
-                      `No se pudo redirigir: ${errorMessage}. Por favor, cierra y vuelve a abrir la aplicación.`
-                    );
-                    // Intentar navegar al login como fallback
-                    try {
-                      router.replace('/login');
-                    } catch (fallbackError) {
-                      console.error('Error en fallback de navegación:', fallbackError);
-                    }
-                  }
-                }, 300);
-              } else {
-                // Para iOS/Web, usar el método normal
-                requestAnimationFrame(() => {
-                  try {
-                    if (rolString === 'Conductor') {
-                      console.log('Redirigiendo a página principal del conductor...');
-                      router.push('/(tabs)/conductor/pagina-principal-conductor');
-                    } else if (rolString === 'Apoderado') {
-                      console.log('Redirigiendo a página principal del apoderado...');
-                      router.push('/(tabs)/apoderado/pagina-principal-apoderado');
-                    } else {
-                      console.error('Rol no válido:', rolString);
-                      Alert.alert('Error', 'Rol de usuario no válido.');
-                    }
-                  } catch (navError: any) {
-                    console.error('Error crítico al navegar:', navError);
-                    const errorMessage = navError?.message || 'Error desconocido al navegar';
-                    Alert.alert(
-                      'Error de navegación', 
-                      `No se pudo redirigir: ${errorMessage}. Por favor, intenta de nuevo.`
-                    );
-                  }
-                });
+              // Pequeño delay para asegurar que los estados se actualicen
+              await new Promise(resolve => setTimeout(resolve, Platform.OS === 'android' ? 300 : 100));
+              
+              // Verificar router
+              if (!router) {
+                throw new Error('Router no está disponible');
               }
-            } catch (verificationError: any) {
-              console.error('Error al verificar datos antes de navegar:', verificationError);
+              
+              // Navegar según el rol
+              if (rolString === 'Conductor') {
+                console.log('Redirigiendo a página principal del conductor...');
+                router.replace('/(tabs)/conductor/pagina-principal-conductor');
+              } else if (rolString === 'Apoderado') {
+                console.log('Redirigiendo a página principal del apoderado...');
+                router.replace('/(tabs)/apoderado/pagina-principal-apoderado');
+              } else {
+                console.error('Rol no válido:', rolString);
+                Alert.alert('Error', 'Rol de usuario no válido.');
+                isProcessingRef.current = false;
+                setLoading(false);
+              }
+            } catch (navError: any) {
+              console.error('Error al navegar:', navError);
+              const errorMessage = navError?.message || 'Error desconocido al navegar';
               Alert.alert(
-                'Error', 
-                'No se pudieron verificar los datos de sesión. Por favor, intenta iniciar sesión nuevamente.'
+                'Error de navegación', 
+                `No se pudo redirigir: ${errorMessage}. Por favor, intenta de nuevo.`
               );
               isProcessingRef.current = false;
               setLoading(false);
             }
-          }, Platform.OS === 'android' ? 500 : 200);
+          };
+          
+          // Ejecutar navegación con delay para Android
+          if (Platform.OS === 'android') {
+            setTimeout(() => {
+              navegarSeguro();
+            }, 500);
+          } else {
+            setTimeout(() => {
+              navegarSeguro();
+            }, 200);
+          }
         } catch (storageError: any) {
           console.error('Error al guardar en AsyncStorage:', storageError);
           const errorMessage = storageError?.message || 'Error desconocido';

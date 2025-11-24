@@ -8,6 +8,7 @@ import { collection, doc, getDocs, limit, onSnapshot, query, setDoc, where, serv
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import * as Location from 'expo-location';
 import {
+  ActivityIndicator,
   Alert,
   Modal,
   Platform,
@@ -36,6 +37,7 @@ interface Pasajero {
 }
 
 export default function PaginaPrincipalConductor() {
+  const [inicializando, setInicializando] = useState(true);
   const [menuVisible, setMenuVisible] = useState(false);
   const [alertasVisible, setAlertasVisible] = useState(false);
   const [alertas, setAlertas] = useState<any[]>([]);
@@ -66,6 +68,40 @@ export default function PaginaPrincipalConductor() {
   const [generandoRuta, setGenerandoRuta] = useState(false);
   useSyncRutActivo();
   const router = useRouter();
+
+  // Validación inicial de Firebase y AsyncStorage
+  useEffect(() => {
+    const validarInicializacion = async () => {
+      try {
+        // Verificar Firebase
+        if (!db) {
+          console.error('Firebase no está inicializado');
+          Alert.alert('Error', 'No se pudo conectar con la base de datos. Por favor, reinicia la aplicación.');
+          return;
+        }
+
+        // Verificar AsyncStorage
+        try {
+          const rutTest = await AsyncStorage.getItem('rutUsuario');
+          if (!rutTest) {
+            console.warn('No se encontró RUT en AsyncStorage');
+          }
+        } catch (storageError) {
+          console.error('Error al acceder a AsyncStorage:', storageError);
+        }
+
+        // Esperar un momento para asegurar que todo esté listo
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        setInicializando(false);
+      } catch (error) {
+        console.error('Error en validación inicial:', error);
+        setInicializando(false);
+      }
+    };
+
+    validarInicializacion();
+  }, []);
   const hayAlertasSinRevisar = useMemo(() => {
     if (alertas.length === 0) return false;
     if (!ultimaRevisionAlertas) return true;
@@ -3337,6 +3373,40 @@ export default function PaginaPrincipalConductor() {
       Alert.alert('Error', 'No se pudo rechazar la solicitud.');
     }
   };
+
+  // Mostrar pantalla de carga mientras se inicializa
+  if (inicializando) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color="#127067" />
+        <Text style={{ marginTop: 20, color: '#127067' }}>Cargando...</Text>
+      </View>
+    );
+  }
+
+  // Verificar que Firebase esté disponible antes de renderizar
+  if (!db) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center', padding: 20 }]}>
+        <Ionicons name="alert-circle" size={64} color="#f44336" />
+        <Text style={{ marginTop: 20, fontSize: 18, color: '#333', textAlign: 'center' }}>
+          Error de conexión
+        </Text>
+        <Text style={{ marginTop: 10, fontSize: 14, color: '#666', textAlign: 'center' }}>
+          No se pudo conectar con la base de datos. Por favor, verifica tu conexión a internet e intenta nuevamente.
+        </Text>
+        <Pressable
+          style={{ marginTop: 20, backgroundColor: '#127067', padding: 12, borderRadius: 8 }}
+          onPress={() => {
+            setInicializando(true);
+            setTimeout(() => setInicializando(false), 1000);
+          }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '600' }}>Reintentar</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>

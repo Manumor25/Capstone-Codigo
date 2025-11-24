@@ -63,6 +63,7 @@
             "usesCleartextTraffic": true,
             "enableProguardInReleaseBuilds": false,
             "enableShrinkResourcesInReleaseBuilds": false,
+            "enableMultidex": true,
             "packagingOptions": {
               "pickFirst": [
                 "**/libc++_shared.so",

@@ -37,6 +37,14 @@ export default function NotificacionesGlobales({
   const alertasInicialesRef = useRef<Set<string>>(new Set());
   const tiempoCargaInicialRef = useRef<number | null>(null);
 
+  // Validar que Firebase esté disponible
+  useEffect(() => {
+    if (!db) {
+      console.error('NotificacionesGlobales: Firebase no está inicializado');
+      return;
+    }
+  }, []);
+
   // Función para normalizar RUT
   const normalizarRut = (rut: string): string => {
     return rut.replace(/[^0-9kK]/g, '').toUpperCase();
@@ -110,13 +118,32 @@ export default function NotificacionesGlobales({
     });
   }, []);
 
+  // Validar que Firebase esté disponible
+  useEffect(() => {
+    if (!db) {
+      console.error('NotificacionesGlobales: Firebase no está inicializado');
+      return;
+    }
+  }, []);
+
   // Listener en tiempo real para alertas
   useEffect(() => {
     const cargarRutYConfigurarListener = async () => {
+      // Verificar Firebase primero
+      if (!db) {
+        console.error('NotificacionesGlobales: Firebase no disponible');
+        return;
+      }
+
       // Obtener RUT del prop o de AsyncStorage
       let rut = rutUsuario;
       if (!rut) {
-        rut = await AsyncStorage.getItem('rutUsuario') || '';
+        try {
+          rut = await AsyncStorage.getItem('rutUsuario') || '';
+        } catch (error) {
+          console.error('Error al obtener RUT de AsyncStorage:', error);
+          return;
+        }
       }
       
       if (!rut) {

@@ -57,6 +57,7 @@ interface Alerta {
 }
 
 export default function PaginaPrincipal() {
+  const [inicializando, setInicializando] = useState(true);
   const router = useRouter();
   const [menuVisible, setMenuVisible] = useState(false);
   const [alertasVisible, setAlertasVisible] = useState(false);
@@ -90,6 +91,40 @@ export default function PaginaPrincipal() {
   } | null>(null);
   const rutaActivaRef = useRef(rutaActiva);
   useSyncRutActivo();
+
+  // Validación inicial de Firebase y AsyncStorage
+  useEffect(() => {
+    const validarInicializacion = async () => {
+      try {
+        // Verificar Firebase
+        if (!db) {
+          console.error('Firebase no está inicializado (apoderado)');
+          Alert.alert('Error', 'No se pudo conectar con la base de datos. Por favor, reinicia la aplicación.');
+          return;
+        }
+
+        // Verificar AsyncStorage
+        try {
+          const rutTest = await AsyncStorage.getItem('rutUsuario');
+          if (!rutTest) {
+            console.warn('No se encontró RUT en AsyncStorage (apoderado)');
+          }
+        } catch (storageError) {
+          console.error('Error al acceder a AsyncStorage (apoderado):', storageError);
+        }
+
+        // Esperar un momento para asegurar que todo esté listo
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        setInicializando(false);
+      } catch (error) {
+        console.error('Error en validación inicial (apoderado):', error);
+        setInicializando(false);
+      }
+    };
+
+    validarInicializacion();
+  }, []);
   
   // Mantener el ref actualizado
   useEffect(() => {
@@ -1508,6 +1543,40 @@ export default function PaginaPrincipal() {
     }
   };
 
+
+  // Mostrar pantalla de carga mientras se inicializa
+  if (inicializando) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color="#127067" />
+        <Text style={{ marginTop: 20, color: '#127067' }}>Cargando...</Text>
+      </View>
+    );
+  }
+
+  // Verificar que Firebase esté disponible antes de renderizar
+  if (!db) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center', padding: 20 }]}>
+        <Ionicons name="alert-circle" size={64} color="#f44336" />
+        <Text style={{ marginTop: 20, fontSize: 18, color: '#333', textAlign: 'center' }}>
+          Error de conexión
+        </Text>
+        <Text style={{ marginTop: 10, fontSize: 14, color: '#666', textAlign: 'center' }}>
+          No se pudo conectar con la base de datos. Por favor, verifica tu conexión a internet e intenta nuevamente.
+        </Text>
+        <Pressable
+          style={{ marginTop: 20, backgroundColor: '#127067', padding: 12, borderRadius: 8 }}
+          onPress={() => {
+            setInicializando(true);
+            setTimeout(() => setInicializando(false), 1000);
+          }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '600' }}>Reintentar</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   // Si está cargando o no hay inscripción activa, mostrar vista inicial
   if (cargandoInscripcion || !tieneInscripcion) {
